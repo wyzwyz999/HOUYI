@@ -1,0 +1,38 @@
+# HOUYI 容器化编排：一键构建 + 运行
+#
+# 用法：
+#   docker compose build            # 构建镜像（首次需下载 ~5GB 权重，较慢）
+#   docker compose run --rm hoyi python pipeline.py --organism "Staphylococcus aureus"
+#   docker compose run --rm hoyi python pipeline.py --organism "Pseudomonas aeruginosa" --dry-run
+#
+# 卷挂载：
+#   ./data    -> /app/data   （知识库/抗原/PDB 等输入数据）
+#   ./results -> /app/results（十环产物输出）
+#   ./outputs -> /app/outputs（RFdiffusion 骨架等中间产物，可选）
+
+services:
+  hoyi:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: hoyi:latest
+    # GPU 直通（需要 nvidia-container-toolkit）
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - HOUYI_RUN_MODE=container
+      - HOUYI_BASE_WIN=/app
+      - HOUYI_BASE_WSL=/app
+      - HOUYI_CONDA_BASE=/opt/conda/etc/profile.d/conda.sh
+      - HOUYI_CHAI1_RETRIES=2
+    volumes:
+      - ../data:/app/data
+      - ../results:/app/results
+    working_dir: /app/scripts
+    # 默认命令可被 docker compose run 覆盖
+    command: ["python", "pipeline.py", "--help"]

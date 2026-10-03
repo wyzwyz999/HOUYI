@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>后羿 HOUYI · 抗菌 Binder 设计平台</title>
+<style>
+  :root{
+    --bg:#0a0f1e; --panel:#12192e; --panel2:#1a2340; --line:#2a3555;
+    --txt:#e6ecff; --muted:#8b9ac2; --accent:#5b8cff; --accent2:#00d4aa;
+    --gold:#ffc94d; --red:#ff6b6b; --green:#3ddc97; --violet:#b482ff;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:linear-gradient(160deg,#0a0f1e,#0c1226); color:var(--txt); line-height:1.7; min-height:100vh;}
+  header{padding:32px 24px 24px; text-align:center; border-bottom:1px solid var(--line);
+    background:radial-gradient(ellipse at 50% -30%,#1e2f66 0%,transparent 55%);}
+  header .logo{width:56px;height:56px;margin:0 auto 10px;border-radius:16px;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;
+    font-size:26px;font-weight:900;color:#fff;box-shadow:0 6px 20px rgba(91,140,255,.4);}
+  header h1{font-size:30px;font-weight:900;letter-spacing:1px;
+    background:linear-gradient(90deg,#fff,#9db8ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+  header .cn{font-size:15px;font-weight:700;letter-spacing:5px;color:var(--gold);margin-top:2px;}
+  header .sub{font-size:12px;color:var(--muted);margin-top:6px;}
+
+  .container{max-width:1100px;margin:0 auto;padding:24px;}
+
+  /* 控制面板 */
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px;margin-bottom:20px;}
+  .panel h2{font-size:16px;margin-bottom:16px;color:var(--accent2);}
+  .controls{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;}
+  .field{flex:1;min-width:200px;}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;letter-spacing:1px;}
+  .field input,.field select{width:100%;background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:10px 14px;color:var(--txt);font-size:14px;}
+  .field input:focus,.field select:focus{outline:none;border-color:var(--accent);}
+  .btn{background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;border-radius:10px;
+    color:#fff;font-size:15px;font-weight:700;padding:11px 24px;cursor:pointer;transition:.15s;white-space:nowrap;}
+  .btn:hover{opacity:.9;transform:translateY(-1px);}
+  .btn:disabled{opacity:.5;cursor:not-allowed;transform:none;}
+  .btn.sec{background:var(--panel2);border:1px solid var(--line);}
+
+  /* 进度 */
+  .progress{margin-bottom:20px;}
+  .rings{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;}
+  .ring{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 10px;
+    text-align:center;transition:.2s;position:relative;}
+  .ring .no{width:28px;height:28px;margin:0 auto 8px;border-radius:50%;background:var(--panel2);
+    display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:var(--muted);
+    border:1px solid var(--line);}
+  .ring .t{font-size:13px;font-weight:700;}
+  .ring .s{font-size:11px;color:var(--muted);margin-top:4px;min-height:16px;}
+  .ring.done{border-color:var(--green);}
+  .ring.done .no{background:var(--green);color:#fff;border-color:var(--green);}
+  .ring.running{border-color:var(--accent2);box-shadow:0 0 16px rgba(0,212,170,.3);animation:pulse 1.2s infinite;}
+  .ring.running .no{background:var(--accent2);color:#fff;border-color:var(--accent2);}
+  .ring.error{border-color:var(--red);}
+  .ring.error .no{background:var(--red);color:#fff;border-color:var(--red);}
+  @keyframes pulse{0%,100%{box-shadow:0 0 8px rgba(0,212,170,.2);}50%{box-shadow:0 0 20px rgba(0,212,170,.5);}}
+
+  /* 总进度条 */
+  .overall{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:16px;}
+  .overall .row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+  .overall .label{font-size:13px;font-weight:700;color:var(--txt);}
+  .overall .pct{font-size:13px;font-weight:800;color:var(--accent2);font-variant-numeric:tabular-nums;}
+  .bar-track{background:var(--panel2);border-radius:8px;height:12px;overflow:hidden;position:relative;}
+  .bar-fill{background:linear-gradient(90deg,var(--accent),var(--accent2));height:100%;width:0%;
+    border-radius:8px;transition:width .4s ease;}
+  .bar-fill.stripe{background-image:linear-gradient(45deg,rgba(255,255,255,.15) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.15) 50%,rgba(255,255,255,.15) 75%,transparent 75%,transparent);
+    background-size:20px 20px;animation:slide 1s linear infinite;}
+  @keyframes slide{0%{background-position:0 0;}100%{background-position:20px 0;}}
+
+  /* 靶点骨架计数网格 */
+  .targets-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:16px;}
+  .tgt{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;}
+  .tgt .name{font-size:12px;font-weight:700;color:var(--txt);margin-bottom:6px;}
+  .tgt .cnt{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;}
+  .tgt .mini-track{background:var(--bg);border-radius:5px;height:6px;margin-top:6px;overflow:hidden;}
+  .tgt .mini-fill{background:var(--accent2);height:100%;width:0%;border-radius:5px;transition:width .3s;}
+  .tgt.done{border-color:var(--green);}
+  .tgt.active{border-color:var(--accent2);box-shadow:0 0 8px rgba(0,212,170,.25);}
+
+  /* 日志 */
+  .log{background:#0a1120;border:1px solid var(--line);border-radius:10px;padding:14px;height:180px;
+    overflow-y:auto;font-family:"SF Mono",Consolas,monospace;font-size:12px;line-height:1.7;}
+  .log .ln{color:var(--muted);}
+  .log .ln.err{color:var(--red);}
+  .log .ln.done{color:var(--green);}
+
+  /* 结果 */
+  .results{display:none;}
+  .results.show{display:block;}
+  .res-table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:12px;overflow:hidden;margin-top:12px;}
+  .res-table th,.res-table td{padding:10px 12px;text-align:left;font-size:12px;border-bottom:1px solid var(--line);}
+  .res-table th{background:var(--panel2);color:var(--muted);font-weight:600;font-size:11px;letter-spacing:1px;}
+  .seq{font-family:"SF Mono",Consolas,monospace;font-size:11px;color:#9fd3ff;word-break:break-all;max-width:400px;}
+  .copy-btn{background:var(--panel2);border:1px solid var(--line);border-radius:6px;color:var(--accent2);
+    padding:2px 8px;font-size:10px;cursor:pointer;}
+  .copy-btn:hover{border-color:var(--accent2);}
+
+  .hint{font-size:12px;color:var(--muted);margin-top:8px;}
+  footer{text-align:center;color:var(--muted);font-size:11px;padding:30px 0;}
+  @media(max-width:760px){.rings{grid-template-columns:1fr;}.controls{flex-direction:column;}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">H</div>
+  <h1>HOUYI</h1>
+  <div class="cn">后羿</div>
+  <div class="sub">自收缩物理穿刺注射 · 杀菌 AI 设计平台 —— 输入细菌名，一键生成抗菌 Binder</div>
+</header>
+
+<div class="container">
+
+  <!-- 控制面板 -->
+  <div class="panel">
+    <h2>🏹 运行设计管线</h2>
+    <div class="controls">
+      <div class="field" style="flex:2">
+        <label>病原菌名称</label>
+        <input type="text" id="organism" value="Staphylococcus aureus" placeholder="如 Staphylococcus aureus / Pseudomonas aeruginosa">
+      </div>
+      <div class="field">
+        <label>评分器</label>
+        <select id="scorer">
+          <option value="length">长度优先（迷你蛋白）</option>
+          <option value="mic">MIC 湿实验活性（需数据）</option>
+        </select>
+      </div>
+      <div class="field" style="flex:0 0 auto">
+        <label>每靶点 Top N</label>
+        <select id="topn"><option>1</option><option selected>3</option><option>5</option></select>
+      </div>
+      <button class="btn" id="runBtn" onclick="run()">▶ 开始设计</button>
+    </div>
+    <div class="hint">可选：填入 <b>靶点</b>（空格分隔）只设计特定靶点；留空则自动推导全部靶点。</div>
+    <div class="controls" style="margin-top:10px">
+      <div class="field" style="flex:3">
+        <label>指定靶点（可选，留空=全部）</label>
+        <input type="text" id="targets" placeholder="如 E5_FemABX E3_Ddl E2_LtaS">
+      </div>
+    </div>
+  </div>
+
+  <!-- 进度 -->
+  <div class="progress">
+    <div class="rings" id="rings"></div>
+    <div class="overall">
+      <div class="row">
+        <span class="label" id="overallLabel">等待启动</span>
+        <span class="pct" id="overallPct">0%</span>
+      </div>
+      <div class="bar-track"><div class="bar-fill" id="overallBar"></div></div>
+    </div>
+    <div class="targets-grid" id="targetsGrid"></div>
+  </div>
+
+  <!-- 日志 -->
+  <div class="panel">
+    <h2>📋 执行日志</h2>
+    <div class="log" id="log"><div class="ln">就绪，等待启动...</div></div>
+  </div>
+
+  <!-- 结果 -->
+  <div class="results" id="results">
+    <div class="panel">
+      <h2>💊 设计结果（Top Binder）</h2>
+      <table class="res-table">
+        <thead><tr><th>靶点</th><th>Binder ID</th><th>长度</th><th>序列</th><th></th></tr></thead>
+        <tbody id="resultBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<footer>后羿 HOUYI · Web 设计平台 · Flask 后端 + hoyi 管线引擎</footer>
+
+<script>
+const RING_NAMES = ["靶点分析","结构预测","Binder 设计","评分排序","输出"];
+let es = null;   // EventSource
+let running = false;
+let activeRing = -1;           // 当前正在执行的环
+let targetsMap = {};           // {target: {done, total, el}}
+let currentTarget = null;      // 当前处理的靶点
+
+function initRings(){
+  const el = document.getElementById("rings");
+  el.innerHTML = RING_NAMES.map((n,i)=>`
+    <div class="ring" id="ring${i}">
+      <div class="no">${i}</div>
+      <div class="t">${n}</div>
+      <div class="s" id="ring${i}status"></div>
+    </div>`).join("");
+  // 重置进度
+  activeRing = -1; targetsMap = {}; currentTarget = null;
+  document.getElementById("overallBar").style.width = "0%";
+  document.getElementById("overallPct").textContent = "0%";
+  document.getElementById("overallLabel").textContent = "准备中";
+  document.getElementById("targetsGrid").innerHTML = "";
+}
+function setRing(i, cls, status){
+  const r = document.getElementById("ring"+i);
+  if(!r) return;
+  r.className = "ring " + cls;
+  document.getElementById("ring"+i+"status").textContent = status;
+}
+function setOverall(percent, label){
+  const bar = document.getElementById("overallBar");
+  bar.style.width = Math.max(0, Math.min(100, percent)) + "%";
+  bar.classList.add("stripe");
+  document.getElementById("overallPct").textContent = Math.round(percent) + "%";
+  if(label !== undefined) document.getElementById("overallLabel").textContent = label;
+}
+function setTargetProgress(target, done, total, active){
+  let entry = targetsMap[target];
+  if(!entry){
+    const grid = document.getElementById("targetsGrid");
+    const div = document.createElement("div");
+    div.className = "tgt";
+    div.innerHTML = `<div class="name">${target}</div>
+      <div class="cnt">0/0</div>
+      <div class="mini-track"><div class="mini-fill"></div></div>`;
+    grid.appendChild(div);
+    entry = targetsMap[target] = {done:0, total:0, el:div};
+  }
+  entry.done = done; entry.total = total;
+  const pct = total > 0 ? Math.round(done * 100 / total) : 0;
+  entry.el.querySelector(".cnt").textContent = `${done}/${total}`;
+  entry.el.querySelector(".mini-fill").style.width = pct + "%";
+  entry.el.className = "tgt" + (active ? " active" : "") + (total > 0 && done >= total ? " done" : "");
+}
+function addLog(msg, cls){
+  const l = document.getElementById("log");
+  const d = document.createElement("div");
+  d.className = "ln" + (cls ? " "+cls : "");
+  d.textContent = "[" + new Date().toLocaleTimeString() + "] " + msg;
+  l.appendChild(d);
+  l.scrollTop = l.scrollHeight;
+}
+
+async function run(){
+  if(running) return;
+  const organism = document.getElementById("organism").value.trim();
+  if(!organism){ alert("请输入病原菌名称"); return; }
+  const scorer = document.getElementById("scorer").value;
+  const topn = parseInt(document.getElementById("topn").value);
+  const targetsRaw = document.getElementById("targets").value.trim();
+  const targets = targetsRaw ? targetsRaw.split(/\s+/) : null;
+
+  running = true;
+  document.getElementById("runBtn").disabled = true;
+  document.getElementById("log").innerHTML = "";
+  document.getElementById("results").classList.remove("show");
+  initRings();
+  addLog("提交任务: " + organism);
+
+  // 启动
+  try{
+    const r = await fetch("/api/run", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({organism, scorer, top_n:topn, targets})});
+    const d = await r.json();
+    if(!d.ok){ addLog("启动失败: " + d.error, "err"); running=false; document.getElementById("runBtn").disabled=false; return; }
+    addLog("任务已启动，监听进度...");
+  }catch(e){
+    addLog("请求失败: " + e, "err"); running=false; document.getElementById("runBtn").disabled=false; return;
+  }
+
+  // 监听 SSE
+  es = new EventSource("/api/stream");
+  es.onmessage = function(ev){
+    if(ev.data === "[DONE]"){
+      es.close(); es=null;
+      running=false;
+      document.getElementById("runBtn").disabled=false;
+      addLog("✅ 管线执行完成", "done");
+      loadResults();
+      return;
+    }
+    const e = JSON.parse(ev.data);
+    handleEvent(e);
+  };
+  es.onerror = function(){
+    // SSE 断开，可能任务已结束
+    if(running){
+      addLog("⚠️ 进度连接中断，尝试获取结果...");
+      setTimeout(()=>{ if(running){ running=false; document.getElementById("runBtn").disabled=false; loadResults(); } }, 1500);
+    }
+  };
+}
+
+function handleEvent(e){
+  if(e.ring >= 0){
+    const cls = e.status === "done" ? "done" : e.status === "running" ? "running" : e.status === "error" ? "error" : "";
+    setRing(e.ring, cls, e.status === "done" ? "✓" : e.status === "running" ? "..." : e.status === "error" ? "✗" : "−");
+  }
+
+  // 细粒度进度事件（环内 progress）
+  if(e.status === "progress"){
+    activeRing = e.ring;
+    if(e.percent !== undefined){
+      setOverall(e.percent, (e.ring_name ? "["+e.ring_name+"] " : "") + (e.message || ""));
+    }
+    if(e.target && (e.subtotal !== undefined || e.current !== undefined)){
+      // 环2：每靶点骨架进度
+      if(e.ring === 2 && e.subtotal !== undefined && e.subtotal_total !== undefined){
+        setTargetProgress(e.target, e.subtotal, e.subtotal_total, true);
+        // 把其他靶点标记为非 active（简化：只高亮当前）
+        Object.keys(targetsMap).forEach(k => {
+          if(k !== e.target && targetsMap[k].el) targetsMap[k].el.classList.remove("active");
+        });
+      } else if(e.ring === 1 && e.subtotal === undefined){
+        // 环1：结构预测逐靶点，用 current/total 表示
+        setTargetProgress(e.target, e.current || 0, e.total || 0, true);
+        Object.keys(targetsMap).forEach(k => {
+          if(k !== e.target && targetsMap[k].el) targetsMap[k].el.classList.remove("active");
+        });
+      }
+    }
+    // progress 事件不写日志（避免刷屏），只更新进度
+    return;
+  }
+
+  // 环开始/结束事件（非 progress）
+  if(e.status === "running"){
+    activeRing = e.ring;
+    document.getElementById("overallBar").classList.add("stripe");
+  }
+  if(e.status === "finish_all" || e.status === "done"){
+    document.getElementById("overallBar").classList.remove("stripe");
+  }
+  if(e.status === "finish_all"){
+    setOverall(100, "全部完成");
+  }
+
+  const cls = e.status === "error" ? "err" : e.status === "done" ? "done" : "";
+  addLog((e.ring_name ? "["+e.ring_name+"] " : "") + e.message, cls);
+}
+
+async function loadResults(){
+  try{
+    const r = await fetch("/api/results");
+    const d = await r.json();
+    const top = d.top_binders || [];
+    if(top.length === 0){ addLog("无结果（可能尚未完成或产物为空）"); return; }
+    const body = document.getElementById("resultBody");
+    body.innerHTML = top.map(b => `
+      <tr>
+        <td><b>${b.target}</b></td>
+        <td>${b.binder_id}</td>
+        <td>${b.length} aa</td>
+        <td class="seq">${b.sequence}</td>
+        <td><button class="copy-btn" onclick="copySeq('${b.sequence}')">复制</button></td>
+      </tr>`).join("");
+    document.getElementById("results").classList.add("show");
+    addLog("已加载 " + top.length + " 条 Top binder");
+  }catch(e){
+    addLog("加载结果失败: " + e, "err");
+  }
+}
+
+function copySeq(seq){
+  navigator.clipboard.writeText(seq).then(()=>addLog("序列已复制")).catch(()=>{
+    const ta=document.createElement("textarea"); ta.value=seq; document.body.appendChild(ta);
+    ta.select(); document.execCommand("copy"); document.body.removeChild(ta); addLog("序列已复制");
+  });
+}
+
+initRings();
+</script>
+</body>
+</html>
