@@ -13,6 +13,7 @@
 import os
 import glob
 import re
+import shlex
 import subprocess
 import threading
 from .utils import log
@@ -180,16 +181,24 @@ class RFdiffusionDesigner:
                    f"(chain {chain} {start}-{end}, binder {binder_min}-{binder_max}aa)")
 
         rfd_root = getattr(self.cfg, "rfd_root", "/home/zhaoxx/RFdiffusion")
-        # 清理 stale schedule（MASA² 踩坑）
-        clean_cmd = (f"rm -f {rfd_root}/schedules/"
-                     "T_50_omega_1000_min_sigma_0_02_min_b_1_5_max_b_2_5_schedule_linear.pkl")
+
+        schedule_file = os.path.join(
+            rfd_root,
+            "schedules",
+            "T_50_omega_1000_min_sigma_0_02_min_b_1_5_max_b_2_5_schedule_linear.pkl",
+        )
+        output_prefix = f"{out_prefix_wsl}/{target_id}_"
+
+        # shell 路径安全转义，兼容包含空格的目录
+        clean_cmd = f"rm -f {shlex.quote(schedule_file)}"
         cmd = (
             f"{clean_cmd} && "
-            f"cd {rfd_root} && "
+            f"cd {shlex.quote(rfd_root)} && "
             f"python -u scripts/run_inference.py "
-            f"inference.output_prefix={out_prefix_wsl}/{target_id}_ "
-            f"inference.input_pdb={pdb_wsl} "
-            f"'contigmap.contigs={contig}' "
+            f"{shlex.quote(f'inference.output_prefix={output_prefix}')} "
+            f"{shlex.quote(f'inference.input_pdb={pdb_wsl}')} "
+            f"{shlex.quote(f'inference.ckpt_override_path={self.cfg.rfd_ckpt}')} "
+            f"{shlex.quote(f'contigmap.contigs={contig}')} "
             f"inference.num_designs={need} "
             f"denoiser.noise_scale_ca=0.5 "
             f"denoiser.noise_scale_frame=0.5 "
@@ -202,8 +211,7 @@ class RFdiffusionDesigner:
 
         # 执行（后端无关：WSL/容器）—— 流式读 stdout，逐骨架推进度
         from .backend import backend
-        conda_base = backend.conda_base
-        full = f"source {conda_base} && conda activate {self.env} && {cmd}"
+        full = backend._wrap(cmd, self.env)
         r = self._run_streaming(full, target_id, existing, num_designs,
                                 out_dir=out_dir, progress_cb=progress_cb)
 

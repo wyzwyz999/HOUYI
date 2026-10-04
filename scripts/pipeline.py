@@ -43,6 +43,8 @@ def main():
     ap.add_argument("--scorer", default="length", help="环4评分器: length/mic")
     ap.add_argument("--mic", help="MIC 湿实验数据 JSON 路径（供 mic 评分器）")
     ap.add_argument("--top-n", type=int, default=3, help="每靶点输出 Top N")
+    ap.add_argument("--num-designs", type=int, default=32,
+                    help="每靶点 RFdiffusion 骨架数")
     ap.add_argument("--verbose", action="store_true", help="详细日志")
     args = ap.parse_args()
 
@@ -67,6 +69,7 @@ def main():
             scorer=args.scorer,
             mic_map=mic_map,
             top_n=args.top_n,
+            num_designs=args.num_designs,
         )
     except Exception as e:
         print(f"\n[FATAL] 管线执行失败: {e}")

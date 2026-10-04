@@ -82,15 +82,26 @@ class Config:
 
     # ---- WSL 工具/conda 环境 ----
     wsl_conda_base: str = "~/miniforge3/etc/profile.d/conda.sh"
-    env_rf: str = "protein_design"
-    env_mpnn: str = "protein_design"
-    env_esm: str = "protein_design"
+    env_rf: str = field(default_factory=lambda: os.environ.get(
+        "HOUYI_ENV_RF", "protein_design"))
+    env_mpnn: str = field(default_factory=lambda: os.environ.get(
+        "HOUYI_ENV_MPNN", "protein_design"))
+    env_esm: str = field(default_factory=lambda: os.environ.get(
+        "HOUYI_ENV_ESM", "protein_design"))
 
     # RFdiffusion / ProteinMPNN 安装路径（容器内可用环境变量覆盖）
     rfd_script: str = field(default_factory=lambda: os.environ.get(
         "HOUYI_RFDIFFUSION", "/home/zhaoxx/RFdiffusion/scripts/run_inference.py"))
     rfd_root: str = field(default_factory=lambda: os.environ.get(
         "HOUYI_RFDIFFUSION_ROOT", "/home/zhaoxx/RFdiffusion"))
+    rfd_ckpt: str = field(default_factory=lambda: os.environ.get(
+        "HOUYI_RF_CKPT",
+        os.path.join(
+            os.environ.get("HOUYI_RFDIFFUSION_ROOT", "/home/zhaoxx/RFdiffusion"),
+            "models",
+            "Complex_base_ckpt.pt",
+        ),
+    ))
     mpnn_script: str = field(default_factory=lambda: os.environ.get(
         "HOUYI_MPNN", "/home/zhaoxx/ProteinMPNN/protein_mpnn_run.py"))
     mpnn_root: str = field(default_factory=lambda: os.environ.get(
