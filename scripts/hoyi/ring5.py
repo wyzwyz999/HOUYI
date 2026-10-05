@@ -10,7 +10,22 @@ def run(cfg, scored=None, top_n=3, state=None):
 
     if scored is None:
         from .utils import load_json
-        scored = load_json(cfg.ring4_out)
+
+        # 优先使用通过 AF2 验证的候选；若不存在或为空，则回退到原 Ring4 评分结果
+        scored = load_json(cfg.ring4_af2_validated_out)
+        if scored:
+            log().info(
+                f"  使用 AF2 validated 候选: {cfg.ring4_af2_validated_out} "
+                f"({len(scored)} 条)"
+            )
+        else:
+            scored = load_json(cfg.ring4_out)
+            if scored:
+                log().info(
+                    f"  未发现 AF2 validated 候选，回退 Ring4: "
+                    f"{cfg.ring4_out} ({len(scored)} 条)"
+                )
+
         if not scored:
             scored = []
 
@@ -31,9 +46,18 @@ def run(cfg, scored=None, top_n=3, state=None):
     for b in scored:
         by_target.setdefault(b["target"], []).append(b)
 
-    # 按每组最优 binder 的 score 降序排列靶点（保持「活性优先」语义，而非字母序）
+    # 按每组最优 binder 的综合评分降序排列靶点。
+    # AF2 validated / 新评分结果优先使用 qc_composite，
+    # 其次 composite，最后兼容旧版 score。
+    def binder_rank_score(b):
+        for key in ("qc_composite", "composite", "score"):
+            value = b.get(key)
+            if value is not None:
+                return value
+        return float("-inf")
+
     def group_best_score(items):
-        return max((b.get("score", float("-inf")) for b in items), default=float("-inf"))
+        return max((binder_rank_score(b) for b in items), default=float("-inf"))
     ordered_targets = sorted(by_target.keys(), key=lambda t: group_best_score(by_target[t]), reverse=True)
 
     top = []

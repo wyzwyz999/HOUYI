@@ -167,6 +167,10 @@ class Config:
         return os.path.join(self.results_dir, "ring4_scored.json")
 
     @property
+    def ring4_af2_validated_out(self):
+        return os.path.join(self.results_dir, "ring4_af2_validated.json")
+
+    @property
     def ring5_fasta(self):
         return os.path.join(self.results_dir, "top_binders.fasta")
 
