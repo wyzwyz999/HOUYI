@@ -84,12 +84,14 @@ def run(cfg, targets, state=None, num_designs=32, dry_run=False):
 
             try:
                 chain = tinfo.get("pdb_chain", "A")
+                hotspot_res = tinfo.get("hotspot_res")
                 # 进度回调：逐骨架推送
                 def _cb(tid, done, total, _t=t):
                     _emit_progress(idx, _t, done, total,
                                    f"{_t}: 生成 {done}/{total} 骨架")
                 res = designer.design(t, pdb_path, chain=chain,
                                       num_designs=num_designs,
+                                      hotspot_res=hotspot_res,
                                       out_dir=out_dir, dry_run=dry_run,
                                       progress_cb=_cb)
                 designed[t] = {"n_binders": res["n_scaffolds"],

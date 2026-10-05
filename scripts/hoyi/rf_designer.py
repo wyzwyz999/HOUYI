@@ -124,6 +124,7 @@ class RFdiffusionDesigner:
 
     def design(self, target_id, pdb_path, chain="A",
                num_designs=32, binder_min=40, binder_max=90,
+               hotspot_res=None,
                out_dir=None, dry_run=False, progress_cb=None):
         """为一个靶点生成 binder 骨架。
 
@@ -164,8 +165,13 @@ class RFdiffusionDesigner:
 
         # 断点续跑：已有骨架计数
         if out_dir:
-            existing = len([f for f in glob.glob(os.path.join(out_dir, "*.pdb"))
-                            if "traj" not in f])
+            existing = len([
+                f for f in glob.glob(os.path.join(out_dir, "*.pdb"))
+                if re.match(
+                    rf"^{re.escape(target_id)}__\d+\.pdb$",
+                    os.path.basename(f),
+                )
+            ])
         else:
             existing = 0
         need = max(0, num_designs - existing)
@@ -191,6 +197,12 @@ class RFdiffusionDesigner:
 
         # shell 路径安全转义，兼容包含空格的目录
         clean_cmd = f"rm -f {shlex.quote(schedule_file)}"
+
+        hotspot_arg = ""
+        if hotspot_res:
+            hotspot_str = ",".join(hotspot_res)
+            hotspot_arg = f" {shlex.quote(f'ppi.hotspot_res=[{hotspot_str}]')}"
+
         cmd = (
             f"{clean_cmd} && "
             f"cd {shlex.quote(rfd_root)} && "
@@ -200,9 +212,12 @@ class RFdiffusionDesigner:
             f"{shlex.quote(f'inference.ckpt_override_path={self.cfg.rfd_ckpt}')} "
             f"{shlex.quote(f'contigmap.contigs={contig}')} "
             f"inference.num_designs={need} "
+            f"inference.design_startnum=-1 "
+            f"inference.cautious=True "
             f"denoiser.noise_scale_ca=0.5 "
             f"denoiser.noise_scale_frame=0.5 "
             f"diffuser.T=50"
+            f"{hotspot_arg}"
         )
 
         if dry_run:
@@ -217,8 +232,13 @@ class RFdiffusionDesigner:
 
         if r.returncode != 0:
             # RFdiffusion 偶发非零退出但骨架已生成，需判断
-            new_count = len([f for f in glob.glob(os.path.join(out_dir, "*.pdb"))
-                             if "traj" not in f]) if out_dir else 0
+            new_count = len([
+                f for f in glob.glob(os.path.join(out_dir, "*.pdb"))
+                if re.match(
+                    rf"^{re.escape(target_id)}__\d+\.pdb$",
+                    os.path.basename(f),
+                )
+            ]) if out_dir else 0
             if new_count > existing:
                 log().warning(f"  {target_id}: RFdiffusion 退出码 {r.returncode} "
                               f"但已生成 {new_count} 骨架，继续")
@@ -228,8 +248,13 @@ class RFdiffusionDesigner:
                 err = getattr(r, "stdout", None) or ""
                 raise CommandError(cmd, r.returncode, err)
 
-        n_final = len([f for f in glob.glob(os.path.join(out_dir, "*.pdb"))
-                       if "traj" not in f]) if out_dir else num_designs
+        n_final = len([
+            f for f in glob.glob(os.path.join(out_dir, "*.pdb"))
+            if re.match(
+                rf"^{re.escape(target_id)}__\d+\.pdb$",
+                os.path.basename(f),
+            )
+        ]) if out_dir else num_designs
         log().info(f"  {target_id}: 完成，共 {n_final} 骨架")
         return {"target_id": target_id, "n_scaffolds": n_final, "out_dir": out_dir}
 

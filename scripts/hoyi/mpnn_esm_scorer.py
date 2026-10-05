@@ -12,6 +12,7 @@ import glob
 import json
 import subprocess
 from .utils import log
+import shlex
 
 
 class MpnnEsmScorer:
@@ -23,7 +24,7 @@ class MpnnEsmScorer:
     def __init__(self, cfg):
         self.cfg = cfg
         self.mpnn_script = cfg.mpnn_script  # ProteinMPNN 脚本路径（容器可覆盖）
-        self.env = "protein_design"
+        self.env = cfg.env_mpnn
 
     def _linux(self, path):
         from .backend import backend
@@ -75,9 +76,11 @@ class MpnnEsmScorer:
             return []
 
         from .backend import backend
-        conda_base = backend.conda_base
-        full = (f"source {conda_base} && conda activate {self.env} && "
-                f"export HF_ENDPOINT=https://hf-mirror.com && python {self._linux(script_win)}")
+        cmd = (
+            "export HF_ENDPOINT=https://hf-mirror.com && "
+            f"python {shlex.quote(self._linux(script_win))}"
+        )
+        full = backend._wrap(cmd, self.env)
         r = backend.run(full)
         if r.returncode != 0:
             from .utils import CommandError
@@ -98,7 +101,7 @@ class MpnnEsmScorer:
         temps_str = ", ".join(str(t) for t in temps)
         pdb_names = [os.path.basename(p) for p in pdbs]
         mpnn_root = getattr(self.cfg, "mpnn_root", "/home/zhaoxx/ProteinMPNN")
-        return f'''import os, json, glob, subprocess, torch
+        return f'''import os, json, glob, subprocess, shlex, torch
 from pathlib import Path
 
 DESIGN = "{design_wsl}"
@@ -135,8 +138,24 @@ def esm_score(seq):
     labels = inputs["input_ids"]
     loss_fn = torch.nn.CrossEntropyLoss(reduction="mean")
     pLL = -loss_fn(logits[0, :-1], labels[0, 1:]).item()
-    return {{"pLL": round(pLL, 4), "emb_norm": round(emb_norm, 4),
-            "composite": int(emb_norm * 100 + pLL * 10)}}
+    composite = int(emb_norm * 100 + pLL * 10)
+    ekr_frac = sum(aa in "EKR" for aa in seq) / len(seq)
+    unique_aa = len(set(seq))
+
+    ekr_penalty = max(0.0, ekr_frac - 0.60) * 300
+    diversity_penalty = max(0, 10 - unique_aa) * 8
+    complexity_penalty = int(round(ekr_penalty + diversity_penalty))
+    qc_composite = composite - complexity_penalty
+
+    return {{
+        "pLL": round(pLL, 4),
+        "emb_norm": round(emb_norm, 4),
+        "composite": composite,
+        "ekr_frac": round(ekr_frac, 4),
+        "unique_aa": unique_aa,
+        "complexity_penalty": complexity_penalty,
+        "qc_composite": qc_composite,
+    }}
 
 def extract_chain_b(pdb_path):
     out = str(pdb_path).replace(".pdb", "_B.pdb")
@@ -176,40 +195,67 @@ for i, name in enumerate(PDB_NAMES):
         continue
 
     # ProteinMPNN 多温度采样（CA-only：RFdiffusion 只有 backbone，无完整侧链）
+    fa_base = name.replace(".pdb", "")
     for temp in TEMPS:
+        temp_tag = str(temp).replace(".", "p")
+        temp_dir = os.path.join(MPNN_DIR, "temp_" + temp_tag)
+        os.makedirs(temp_dir, exist_ok=True)
+
         cmd = [
             "python", MPNN + "/protein_mpnn_run.py",
             "--pdb_path", b_pdb,
             "--pdb_path_chains", "A",
-            "--out_folder", MPNN_DIR,
+            "--out_folder", temp_dir,
             "--num_seq_per_target", str(NUMS),
             "--sampling_temp", str(temp),
             "--seed", "42",
             "--batch_size", "1",
             "--ca_only",
         ]
-        subprocess.run(cmd, capture_output=True, cwd=MPNN)
 
-    # 读最新 seqs
-    fa_base = name.replace(".pdb", "")
-    fas = sorted(Path(MPNN_DIR).glob("seqs/*" + fa_base + "*.fa"))
-    if not fas:
-        continue
-    for fa in fas[:6]:
-        seqs = designed_seqs(str(fa))
-        for seq in seqs:
-            if len(seq) < 20 or len(seq) > 120:
-                continue
-            m = esm_score(seq)
-            m["target"] = TARGET
-            m["binder_id"] = fa.stem
-            m["sequence"] = seq
-            m["length"] = len(seq)
-            results.append(m)
+        rr = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=MPNN
+        )
+
+        if rr.returncode != 0:
+            print(
+                "  [" + TARGET + "] " + name + " temp=" + str(temp)
+                + ": ProteinMPNN failed: " + rr.stderr,
+                flush=True
+            )
+            continue
+
+        fas = sorted(Path(temp_dir).glob("seqs/*" + fa_base + "*.fa"))
+        if not fas:
+            print(
+                "  [" + TARGET + "] " + name + " temp=" + str(temp)
+                + ": no FASTA output",
+                flush=True
+            )
+            continue
+
+        for fa in fas:
+            seqs = designed_seqs(str(fa))
+            for sample_idx, seq in enumerate(seqs, 1):
+                if len(seq) < 20 or len(seq) > 120:
+                    continue
+                m = esm_score(seq)
+                m["target"] = TARGET
+                m["binder_id"] = (
+                    fa.stem + "_T" + str(temp) + "_sample" + str(sample_idx)
+                )
+                m["sampling_temp"] = temp
+                m["sample"] = sample_idx
+                m["sequence"] = seq
+                m["length"] = len(seq)
+                results.append(m)
     if (i + 1) % 5 == 0:
         print(f"  [{{TARGET}}] {{i+1}}/{{len(PDB_NAMES)}} 骨架完成", flush=True)
 
-results.sort(key=lambda x: x["composite"], reverse=True)
+results.sort(key=lambda x: x.get("qc_composite", x["composite"]), reverse=True)
 with open(OUT_JSON, "w") as f:
     json.dump(results, f, indent=2)
 print(f"[{{TARGET}}] 完成，共 {{len(results)}} 条 binder 序列", flush=True)

@@ -126,6 +126,8 @@ def run(cfg, targets=None, scorer_name="length", mic_map=None, state=None, dry_r
                     "esm_composite": r["composite"],
                     "pLL": r["pLL"],
                     "emb_norm": r["emb_norm"],
+                    "sampling_temp": r.get("sampling_temp"),
+                    "sample": r.get("sample"),
                 }
                 all_scored.append(b)
         all_scored.sort(key=lambda x: x["score"], reverse=True)

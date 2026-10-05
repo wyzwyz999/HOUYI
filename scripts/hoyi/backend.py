@@ -18,6 +18,7 @@
 """
 import os
 import subprocess
+import shlex
 
 
 class ExecutionBackend:
@@ -124,17 +125,20 @@ class ExecutionBackend:
         return ["bash", "-lc", full_cmd]
 
     def _wrap(self, cmd, env_name):
-        """包裹命令：conda 激活（如指定）+ 原命令。"""
+        """包裹命令：在目标 conda 环境中执行命令。"""
         if not env_name:
             return cmd
         if self.mode == "wsl":
             conda_base = os.environ.get(
                 "HOUYI_CONDA_BASE", "~/miniforge3/etc/profile.d/conda.sh")
-            return f"source {conda_base} && conda activate {env_name} && {cmd}"
-        # container/native：conda 已激活或直接在 PATH
-        conda_base = os.environ.get(
-            "HOUYI_CONDA_BASE", "/opt/conda/etc/profile.d/conda.sh")
-        return f"source {conda_base} && conda activate {env_name} && {cmd}"
+            return f"source {shlex.quote(conda_base)} && conda activate {shlex.quote(env_name)} && {cmd}"
+
+        # native/container:
+        # 避免 bash -lc 下 conda activate 后 PATH 被 login shell 重置。
+        return (
+            f"conda run -n {shlex.quote(env_name)} "
+            f"--no-capture-output bash -c {shlex.quote(cmd)}"
+        )
 
     # ---- conda 环境相关 ----
     @property
