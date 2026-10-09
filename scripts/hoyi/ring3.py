@@ -11,9 +11,16 @@ from .utils import load_json, save_json, log, emit_event
 from .rf_designer import RFdiffusionDesigner
 
 
-def run(cfg, targets, state=None, num_designs=32, dry_run=False):
+def run(cfg, targets, state=None, num_designs=32, dry_run=False, force_de_novo=False):
     log().info("===== 环 3：binder 设计（RFdiffusion）=====")
-    binder_lib = load_json(cfg.binder_lib_path) if cfg.binder_lib_path else None
+    binder_lib = (
+        None
+        if force_de_novo
+        else (load_json(cfg.binder_lib_path) if cfg.binder_lib_path else None)
+    )
+
+    if force_de_novo:
+        log().info("  force_de_novo=True：忽略已有 binder 库，进入 RFdiffusion 从头设计")
     designed = {}
 
     if binder_lib:
@@ -41,8 +48,11 @@ def run(cfg, targets, state=None, num_designs=32, dry_run=False):
             tmeta = kb.get("targets", {})
         # 环2 结构状态（含 struct_path，支持 Chai-1 预测结果）
         ring2 = load_json(cfg.ring2_out, default={})
-        pdb_dir = os.path.join(cfg.data_dir, "pdbs",
-                               _org_slug(cfg.data_source.get("kb", "")))
+        pdb_dir = os.path.join(
+            cfg.data_dir,
+            "pdbs",
+            cfg.organism_slug,
+        )
 
         total_targets = len(targets)
 
@@ -70,8 +80,13 @@ def run(cfg, targets, state=None, num_designs=32, dry_run=False):
                 struct_path = os.path.join(pdb_dir, f"{pdb_id}.pdb")
 
             pdb_path = struct_path
-            out_dir = os.path.join(cfg.data_dir, "designs", _org_slug(cfg.data_source.get("kb", "")),
-                                   t, "rfdiffusion")
+            out_dir = os.path.join(
+                cfg.data_dir,
+                "designs",
+                cfg.organism_slug,
+                t,
+                "rfdiffusion",
+            )
 
             if not os.path.exists(pdb_path):
                 designed[t] = {"n_binders": 0, "source": "pdb_missing"}
@@ -84,6 +99,7 @@ def run(cfg, targets, state=None, num_designs=32, dry_run=False):
 
             try:
                 chain = tinfo.get("pdb_chain", "A")
+                binder_chain = tinfo.get("binder_chain", "B")
                 hotspot_res = tinfo.get("hotspot_res")
                 # 进度回调：逐骨架推送
                 def _cb(tid, done, total, _t=t):
@@ -94,9 +110,14 @@ def run(cfg, targets, state=None, num_designs=32, dry_run=False):
                                       hotspot_res=hotspot_res,
                                       out_dir=out_dir, dry_run=dry_run,
                                       progress_cb=_cb)
-                designed[t] = {"n_binders": res["n_scaffolds"],
-                               "source": "rfdiffusion",
-                               "out_dir": out_dir}
+                designed[t] = {
+                    "n_binders": res["n_scaffolds"],
+                    "source": "rfdiffusion",
+                    "out_dir": out_dir,
+                    "target_chain": chain,
+                    "binder_chain": binder_chain,
+                    "hotspot_res": hotspot_res or [],
+                }
                 _emit_progress(idx + 1, t, res["n_scaffolds"], num_designs,
                                f"{t}: 完成，{res['n_scaffolds']}/{num_designs} 骨架")
             except Exception as e:

@@ -30,18 +30,19 @@ class MpnnEsmScorer:
         from .backend import backend
         return backend.to_linux(path)
 
-    def extract_chain_b(self, pdb_path, out_path):
-        """从 RFdiffusion 复合 PDB 提取 chain B（binder 链）为独立 PDB。"""
+    def extract_chain(self, pdb_path, out_path, chain="B"):
+        """从 RFdiffusion 复合 PDB 提取指定 binder 链。"""
         with open(pdb_path) as fin, open(out_path, "w") as fout:
             for line in fin:
-                if line.startswith("ATOM") and line[21] == "B":
+                if line.startswith("ATOM") and line[21] == chain:
                     fout.write(line)
                 elif line.startswith(("TER", "END")):
                     fout.write(line)
         return out_path
 
     def run(self, design_dir, target_id, num_seq_per_target=3,
-            temps=(0.10, 0.15, 0.20), dry_run=False):
+            temps=(0.10, 0.15, 0.20), dry_run=False,
+            allowed_pdb_names=None, binder_chain="B"):
         """对某靶点所有 RFdiffusion 骨架做 MPNN 序列设计 + ESM 评分。
 
         Args:
@@ -56,16 +57,38 @@ class MpnnEsmScorer:
         design_wsl = self._linux(design_dir)
         mpnn_dir_wsl = self._linux(design_dir + "_mpnn")
 
-        pdbs = sorted([f for f in glob.glob(os.path.join(design_dir, "*.pdb"))
-                       if "traj" not in f and not f.endswith("_B.pdb") and "cont" not in f])
+        pdbs = sorted([
+            f for f in glob.glob(os.path.join(design_dir, "*.pdb"))
+            if "traj" not in f
+            and not f.endswith(f"_{binder_chain}.pdb")
+            and "cont" not in f
+        ])
+
+        # Ring3.5 interface gate:
+        # 如果提供允许的backbone文件名，只让这些结构进入ProteinMPNN。
+        # 不删除原始PDB，仅做流程级过滤。
+        if allowed_pdb_names is not None:
+            allowed = set(allowed_pdb_names)
+            before = len(pdbs)
+            pdbs = [
+                p for p in pdbs
+                if os.path.basename(p) in allowed
+            ]
 
         if not pdbs:
             log().warning(f"  {target_id}: 无骨架可评分")
             return []
 
         # 把整个评分流程写成 WSL 端 python 脚本执行（避免 PowerShell 转义问题）
-        py = self._build_score_script(design_wsl, mpnn_dir_wsl, target_id,
-                                      pdbs, num_seq_per_target, temps)
+        py = self._build_score_script(
+            design_wsl,
+            mpnn_dir_wsl,
+            target_id,
+            pdbs,
+            num_seq_per_target,
+            temps,
+            binder_chain,
+        )
         # 写入脚本（Windows 侧写，WSL/容器读）
         script_win = os.path.join(design_dir, "_score.py")
         with open(script_win, "w", encoding="utf-8") as f:
@@ -96,7 +119,8 @@ class MpnnEsmScorer:
         return []
 
     def _build_score_script(self, design_wsl, mpnn_dir_wsl, target_id,
-                            pdbs, num_seq_per_target, temps):
+                            pdbs, num_seq_per_target, temps,
+                            binder_chain):
         """生成 WSL 端 python 评分脚本源码。"""
         temps_str = ", ".join(str(t) for t in temps)
         pdb_names = [os.path.basename(p) for p in pdbs]
@@ -111,6 +135,7 @@ TARGET = "{target_id}"
 NUMS = {num_seq_per_target}
 TEMPS = [{temps_str}]
 PDB_NAMES = {pdb_names!r}
+BINDER_CHAIN = {binder_chain!r}
 OUT_JSON = DESIGN + "/{target_id}_esm_scores.json"
 
 os.makedirs(MPNN_DIR, exist_ok=True)
@@ -157,12 +182,16 @@ def esm_score(seq):
         "qc_composite": qc_composite,
     }}
 
-def extract_chain_b(pdb_path):
-    out = str(pdb_path).replace(".pdb", "_B.pdb")
+def extract_binder_chain(pdb_path, chain):
+    out = str(pdb_path).replace(
+        ".pdb",
+        "_" + chain + ".pdb"
+    )
     with open(pdb_path) as fin, open(out, "w") as fout:
         for line in fin:
-            if line.startswith("ATOM") and line[21] == "B":
-                # 重命名链 B → A（ProteinMPNN 兼容），对齐 MASA² 做法
+            if line.startswith("ATOM") and line[21] == chain:
+                # 提取出的binder统一重命名为A，
+                # 仅用于ProteinMPNN单链输入兼容。
                 fout.write(line[:21] + "A" + line[22:])
             elif line.startswith(("TER", "END")):
                 fout.write(line)
@@ -184,14 +213,22 @@ def designed_seqs(fa_path):
 results = []
 for i, name in enumerate(PDB_NAMES):
     pdb_path = DESIGN + "/" + name
-    b_pdb = extract_chain_b(pdb_path)
+    binder_pdb = extract_binder_chain(
+        pdb_path,
+        BINDER_CHAIN
+    )
     catoms = 0
-    with open(b_pdb) as f:
+    with open(binder_pdb) as f:
         for line in f:
             if line.startswith("ATOM"):
                 catoms += 1
     if catoms < 30:
-        print(f"  [{{TARGET}}] {{name}}: chain B too small ({{catoms}}), skip", flush=True)
+        print(
+            f"  [{{TARGET}}] {{name}}: chain "
+            + BINDER_CHAIN
+            + f" too small ({{catoms}}), skip",
+            flush=True
+        )
         continue
 
     # ProteinMPNN 多温度采样（CA-only：RFdiffusion 只有 backbone，无完整侧链）
@@ -203,7 +240,8 @@ for i, name in enumerate(PDB_NAMES):
 
         cmd = [
             "python", MPNN + "/protein_mpnn_run.py",
-            "--pdb_path", b_pdb,
+            "--pdb_path", binder_pdb,
+            # binder已在临时PDB中统一重命名为A
             "--pdb_path_chains", "A",
             "--out_folder", temp_dir,
             "--num_seq_per_target", str(NUMS),

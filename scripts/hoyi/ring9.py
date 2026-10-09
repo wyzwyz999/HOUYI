@@ -12,6 +12,8 @@
 
 结构：重编程尾纤维 = pvc13_N(402aa) + linker(GGSGGGGSGG) + binder + linker(GGSGGGGSGG) + pvc13_C(32aa)
 """
+import os
+
 from .config import PVC13_N, PVC13_C, PVC13_LINKER
 from .utils import load_json, save_json, log, is_dry_run
 
@@ -56,35 +58,77 @@ def run(cfg, fiber_binders=None, state=None):
         return []
 
     fibers = []
+    skipped = []
+
     for fb in fiber_binders:
-        binder_seq = fb.get("binder_sequence")
-        # 无 binder 序列（天然结构域未填 / 从头设计待接入）→ 不拼接，标记待补充
-        if not binder_seq:
-            full_seq = None
-            if fb.get("source") == "natural_domain":
-                note = f"天然结构域 {fb.get('binder_id')} 序列待补充后重编程"
+        binder_seq = (fb.get("binder_sequence") or "").strip()
+        route = fb.get("route")
+        route_status = fb.get("route_status")
+
+        # Ring8 双轨后，仅 READY + 有真实序列的候选进入 Ring9。
+        # 旧版无 route_status 的记录保持兼容：只要有 binder_sequence 即可进入。
+        is_ready = (
+            route_status == "READY"
+            if route_status is not None
+            else bool(binder_seq)
+        )
+
+        if not is_ready or not binder_seq:
+            if route_status not in (None, "READY"):
+                reason_code = str(route_status)
             else:
-                note = "从头设计 binder 序列待接入（RFdiffusion）后重编程"
-        else:
-            full_seq = build_reprogrammed_fiber(binder_seq)
-            note = "已按 pvc13_N-linker-binder-linker-pvc13_C 三段式重编程"
+                reason_code = "MISSING_BINDER_SEQUENCE"
+
+            skipped.append({
+                "fiber_target": fb.get("fiber_target"),
+                "organism": fb.get("organism", cfg._organism or ""),
+                "binder_id": fb.get("binder_id"),
+                "route": route,
+                "route_status": route_status,
+                "source": fb.get("source"),
+
+                # 兼容旧字段
+                "reason": (
+                    "route_not_ready"
+                    if route_status not in (None, "READY")
+                    else "missing_binder_sequence"
+                ),
+
+                # 新的机器可读细粒度原因
+                "reason_code": reason_code,
+            })
+            continue
+
+        full_seq = build_reprogrammed_fiber(binder_seq)
 
         fiber = {
             "fiber_target": fb.get("fiber_target"),
+            "organism": fb.get("organism", cfg._organism or ""),
             "binder_id": fb.get("binder_id"),
             "source": fb.get("source"),
+            "route": route,
+            "route_status": route_status,
+            "reference_fiber": fb.get("reference_fiber"),
+            "reference_uniprot": fb.get("reference_uniprot"),
+            "reference_pdb": fb.get("reference_pdb"),
             "binder_sequence": binder_seq,
             "pvc13_N": PVC13_N,
             "pvc13_C": PVC13_C,
             "linker": PVC13_LINKER,
             "reprogrammed_sequence": full_seq,
-            "reprogrammed_length": len(full_seq) if full_seq else None,
-            "note": note,
+            "reprogrammed_length": len(full_seq),
+            "note": (
+                "已按 pvc13_N-linker-binder-linker-pvc13_C "
+                "三段式重编程"
+            ),
         }
         fibers.append(fiber)
 
     # 落盘
     save_json(cfg.ring9_out, fibers)
+
+    skipped_path = os.path.join(cfg.results_dir, "ring9_skipped.json")
+    save_json(skipped_path, skipped)
 
     if not is_dry_run():
         with open(cfg.ring9_fasta, "w", encoding="utf-8") as f:
@@ -94,8 +138,11 @@ def run(cfg, fiber_binders=None, state=None):
                             f"len={fb['reprogrammed_length']} reprogrammed_fiber\n"
                             f"{fb['reprogrammed_sequence']}\n")
 
-    n_full = sum(1 for fb in fibers if fb["reprogrammed_sequence"])
-    log().info(f"  输出 {len(fibers)} 条重编程尾纤维（{n_full} 条已拼接完整序列）")
+    n_full = len(fibers)
+    log().info(
+        f"  输出 {n_full} 条重编程尾纤维；"
+        f"跳过 {len(skipped)} 条非 READY / 无序列 route"
+    )
     log().info(f"  FASTA: {cfg.ring9_fasta}")
     log().info(f"  JSON:  {cfg.ring9_out}")
 

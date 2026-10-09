@@ -50,37 +50,119 @@ def run(cfg, payloads=None, reprogrammed_fibers=None, state=None):
     if payloads:
         for p in payloads:
             org = p.get("organism", cfg._organism or "")
-            matched_fibers = fibers_by_org.get(org) or fibers_by_org.get("") or reprogrammed_fibers
+            matched_fibers = (
+                fibers_by_org.get(org)
+                or fibers_by_org.get("")
+                or reprogrammed_fibers
+            )
 
-            syringe = {
-                "syringe_id": f"NS-{p.get('target', 'unknown')}",
-                "organism": org,
-                "components": {
-                    "pvc1_12": {"status": "native", "note": "PVC 主体管-鞘组件（保持天然）"},
-                    "pvc13_reprogrammed": {
-                        "status": "reprogrammed",
-                        "fiber_sequence": (matched_fibers[0].get("reprogrammed_sequence")
-                                           if matched_fibers else None),
-                        "fiber_target": (matched_fibers[0].get("fiber_target")
-                                         if matched_fibers else None),
+            # 只使用具有完整重编程序列的fiber参与正式组合。
+            valid_fibers = [
+                f for f in matched_fibers
+                if f.get("reprogrammed_sequence")
+            ]
+
+            if valid_fibers:
+                for f in valid_fibers:
+                    payload_tag = (
+                        p.get("binder_id")
+                        or p.get("target")
+                        or "payload"
+                    )
+                    fiber_tag = (
+                        f.get("binder_id")
+                        or f.get("fiber_target")
+                        or "fiber"
+                    )
+
+                    syringe_id = f"NS-{payload_tag}__{fiber_tag}"
+
+                    syringe = {
+                        "syringe_id": syringe_id,
+                        "design_id": syringe_id,
+                        "run_id": (
+                            p.get("run_id")
+                            or f.get("run_id")
+                            or None
+                        ),
+                        "organism": org,
+                        "components": {
+                            "pvc1_12": {
+                                "status": "native",
+                                "note": "PVC 主体管-鞘组件（保持天然）",
+                            },
+                            "pvc13_reprogrammed": {
+                                "status": "reprogrammed",
+                                "fiber_sequence": f.get("reprogrammed_sequence"),
+                                "fiber_target": f.get("fiber_target"),
+                                "fiber_binder_id": f.get("binder_id"),
+                                "route": f.get("route"),
+                                "source": f.get("source"),
+                                "reference_fiber": f.get("reference_fiber"),
+                                "reference_uniprot": f.get("reference_uniprot"),
+                                "reference_pdb": f.get("reference_pdb"),
+                                "evidence_summary": f.get("evidence_summary"),
+                            },
+                            "pvc14_16": {
+                                "status": "native",
+                                "note": "PVC 尾部/末端组件（保持天然）",
+                            },
+                            "payload": {
+                                "target": p.get("target"),
+                                "binder_id": p.get("binder_id"),
+                                "candidate_tier": p.get("candidate_tier"),
+                                "payload_sequence": p.get("payload_sequence", ""),
+                                "payload_length": p.get("payload_length"),
+                                "evidence_summary": p.get("evidence_summary"),
+                                "source_record_id": p.get("source_record_id"),
+                                "mechanism": "杀菌载荷（经 Pdp1_NTD 装载，子弹）",
+                            },
+                        },
+                        "assembly_note": (
+                            "pvc1-12 + pvc13_N-binder-C + pvc14-16 + designed Payload。"
+                            "保持管-鞘主体组装不变，仅替换 pvc13 受体识别域实现靶向重定向，"
+                            "同时经 Pdp1_NTD 装载杀菌载荷。载荷 + 尾纤维重定向 = PVC 完整重设计。"
+                        ),
+                        "complete": True,
+                    }
+                    nanosyringes.append(syringe)
+
+            else:
+                # 不静默丢弃payload：保留一条incomplete记录便于批处理审计。
+                syringe_id = (
+                    f"NS-{p.get('binder_id') or p.get('target', 'unknown')}__NO_FIBER"
+                )
+
+                syringe = {
+                    "syringe_id": syringe_id,
+                    "design_id": syringe_id,
+                    "run_id": p.get("run_id"),
+                    "organism": org,
+                    "reason_code": "NO_READY_FIBER",
+                    "components": {
+                        "pvc1_12": {"status": "native"},
+                        "pvc13_reprogrammed": {
+                            "status": "missing",
+                            "fiber_sequence": None,
+                            "fiber_target": None,
+                            "fiber_binder_id": None,
+                            "route": None,
+                            "source": None,
+                        },
+                        "pvc14_16": {"status": "native"},
+                        "payload": {
+                            "target": p.get("target"),
+                            "binder_id": p.get("binder_id"),
+                            "candidate_tier": p.get("candidate_tier"),
+                            "payload_sequence": p.get("payload_sequence", ""),
+                            "payload_length": p.get("payload_length"),
+                            "mechanism": "杀菌载荷（经 Pdp1_NTD 装载，子弹）",
+                        },
                     },
-                    "pvc14_16": {"status": "native", "note": "PVC 尾部/末端组件（保持天然）"},
-                    "payload": {
-                        "target": p.get("target"),
-                        "binder_id": p.get("binder_id"),
-                        "payload_sequence": p.get("payload_sequence", ""),
-                        "payload_length": p.get("payload_length"),
-                        "mechanism": "杀菌载荷（经 Pdp1_NTD 装载，子弹）",
-                    },
-                },
-                "assembly_note": (
-                    "pvc1-12 + pvc13_N-binder-C + pvc14-16 + designed Payload。"
-                    "保持管-鞘主体组装不变，仅替换 pvc13 受体识别域实现靶向重定向，"
-                    "同时经 Pdp1_NTD 装载杀菌载荷。载荷 + 尾纤维重定向 = PVC 完整重设计。"
-                ),
-                "complete": bool(payloads and matched_fibers and matched_fibers[0].get("reprogrammed_sequence")),
-            }
-            nanosyringes.append(syringe)
+                    "assembly_note": "已有payload，但该菌当前无可执行READY尾纤维。",
+                    "complete": False,
+                }
+                nanosyringes.append(syringe)
     else:
         # 无载荷时，输出尾纤维模块规格（空载荷注射器）
         for f in reprogrammed_fibers:
@@ -93,6 +175,11 @@ def run(cfg, payloads=None, reprogrammed_fibers=None, state=None):
                         "status": "reprogrammed",
                         "fiber_sequence": f.get("reprogrammed_sequence"),
                         "fiber_target": f.get("fiber_target"),
+                        "fiber_binder_id": f.get("binder_id"),
+                        "route": f.get("route"),
+                        "source": f.get("source"),
+                        "reference_fiber": f.get("reference_fiber"),
+                        "reference_uniprot": f.get("reference_uniprot"),
                     },
                     "pvc14_16": {"status": "native"},
                     "payload": None,

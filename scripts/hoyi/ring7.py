@@ -54,14 +54,33 @@ def run(cfg, fiber_targets=None, state=None, dry_run=False):
     if fiber_targets:
         candidates = {t: kb_targets.get(t, {}) for t in fiber_targets}
     else:
-        # 按 organism 匹配（大小写/子串）；若无 organism 信息则全部
+        # 按 organism 匹配（大小写/子串）。
+        # 只有当前 organism 为空时才允许使用全库；
+        # 已指定 organism 但无匹配时禁止跨菌种 fallback。
         candidates = {}
-        for t, info in kb_targets.items():
-            org = (info.get("organism", "") or "").lower()
-            if not organism or not org or organism.lower() in org or org in organism.lower():
-                candidates[t] = info
-        if not candidates:
+
+        if not organism:
             candidates = dict(kb_targets)
+        else:
+            org_query = organism.lower()
+
+            for t, info in kb_targets.items():
+                org = (info.get("organism", "") or "").lower()
+
+                if (
+                    org
+                    and (
+                        org_query in org
+                        or org in org_query
+                    )
+                ):
+                    candidates[t] = info
+
+            if not candidates:
+                log().warning(
+                    f"  fiber KB 中无 organism={organism} 的匹配受体，"
+                    "不跨菌种复用其他受体"
+                )
 
     if not candidates:
         log().warning("  无尾纤维靶点（知识库为空），跳过")

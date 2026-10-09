@@ -19,6 +19,7 @@ WTA/LTA/荚膜都是糖靶点，对它们应复用天然噬菌体尾纤维（Gp4
 import os
 from .utils import load_json, save_json, log, emit_event
 from .rf_designer import RFdiffusionDesigner
+from .natural_rbp_search import search_natural_rbps
 
 
 # 受体类型 → 首选设计策略 + fallback 天然模板
@@ -49,7 +50,7 @@ RBD_MIN = 60
 RBD_MAX = 130
 
 
-def run(cfg, fiber_targets=None, state=None, num_designs=32, dry_run=False):
+def run(cfg, fiber_targets=None, state=None, num_designs=32, mpnn_samples=3, dry_run=False):
     """环 8：尾纤维 binder / 天然结构域筛选。
 
     Args:
@@ -57,6 +58,7 @@ def run(cfg, fiber_targets=None, state=None, num_designs=32, dry_run=False):
         fiber_targets: 尾纤维靶点列表（None=从环7 产物读）
         state: 状态对象
         num_designs: 每受体从头设计骨架数（仅 surface_protein 类生效）
+        mpnn_samples: 每骨架、每采样温度的 ProteinMPNN 序列数
         dry_run: 预览
 
     Returns:
@@ -79,7 +81,12 @@ def run(cfg, fiber_targets=None, state=None, num_designs=32, dry_run=False):
     designer = RFdiffusionDesigner(cfg)
 
     # 尾纤维 RBD 结构目录（与胞内酶 binder 分开）
-    rbd_dir = os.path.join(cfg.data_dir, "designs", "tail_fiber_rbd")
+    rbd_dir = os.path.join(
+        cfg.data_dir,
+        "designs",
+        cfg.organism_slug,
+        "tail_fiber_rbd",
+    )
 
     results = []
     total = len(fiber_targets)
@@ -95,7 +102,7 @@ def run(cfg, fiber_targets=None, state=None, num_designs=32, dry_run=False):
             "target": ft.get("fiber_target"),
         })
 
-        rec = {
+        base = {
             "fiber_target": ft.get("fiber_target"),
             "receptor_type": receptor_type,
             "receptor_desc": strategy["desc"],
@@ -107,53 +114,162 @@ def run(cfg, fiber_targets=None, state=None, num_designs=32, dry_run=False):
             "priority_rank": ft.get("priority_rank"),
             "composite_score": ft.get("composite_score"),
             "organism": ft.get("organism", ""),
-            "source": None,  # 最终选定的 binder/结构域来源
-            "binder_sequence": None,
-            "binder_id": None,
-            "out_dir": None,
-            "n_scaffolds": 0,
-            "note": None,
         }
 
-        # ---- 判定设计路径 ----
-        # 1) 有 reference_fiber（天然模板，如 Gp45）→ 复用天然结构域（参考 MASA 先例）
-        # 2) surface_protein + 有 reference_pdb → 真实 RFdiffusion 从头设计 RBD
-        # 3) 其余 → 待补（糖结合域挖掘 / 天然结构域序列待填）
-        if ft.get("reference_fiber"):
-            rec["source"] = "natural_domain"
-            rec["binder_id"] = ft["reference_fiber"]
-            # 若知识库已填入天然结构域序列（如 Gp45），直接作为 binder_sequence，
-            # 环9 可直接拼接重编程尾纤维；否则标记序列待补充
-            ref_seq = ft.get("reference_sequence")
-            if ref_seq:
-                rec["binder_sequence"] = ref_seq
-                rec["note"] = (f"复用天然尾纤维结构域 {ft['reference_fiber']}"
-                               f"（识别 {ft.get('binding_site', '')}，"
-                               f"{len(ref_seq)}aa），可直接进入环9 重编程")
-            else:
-                rec["note"] = (f"复用天然尾纤维结构域 {ft['reference_fiber']}"
-                               f"（识别 {ft.get('binding_site', '')}），"
-                               f"符合「糖靶点复用天然蛋白」的策略；序列待补充后重编程")
-        elif strategy["rfdiffusion_ok"] and ft.get("reference_pdb"):
-            # surface_protein 类 + 有结构 → 真实 RFdiffusion 从头设计 RBD
-            rec["source"] = "rfdiffusion"
-            rec["binder_id"] = f"{ft['fiber_target']}_RBD"
-            _design_rbd(designer, cfg, ft, rec, rbd_dir, num_designs, dry_run)
-        elif strategy["rfdiffusion_ok"] and not ft.get("reference_pdb"):
-            rec["source"] = "de_novo_pending"
-            rec["note"] = ("surface_protein 受体但无 reference_pdb 结构，"
-                           "需先结构预测（Chai-1 / 复用 PDB）后接入 RFdiffusion 设计")
-        else:
-            # 糖类受体无天然模板 → 糖结合域挖掘待接入
-            rec["source"] = "glycan_domain_pending"
-            rec["note"] = ("糖类受体且无天然模板，需挖掘天然糖结合域"
-                           "（CBM/凝集素结构域）；RFdiffusion 不适用糖靶点")
+        route_results = []
 
-        results.append(rec)
+        # =====================================================
+        # Route A: 天然蛋白 / 天然尾纤维 / RBP
+        # =====================================================
+        natural = dict(base)
+        natural["route"] = "natural"
+        natural["source"] = "natural_domain"
+        natural["binder_sequence"] = None
+        natural["binder_id"] = None
+        natural["out_dir"] = None
+        natural["n_scaffolds"] = 0
+
+        if ft.get("reference_fiber"):
+            natural["binder_id"] = ft["reference_fiber"]
+            ref_seq = ft.get("reference_sequence")
+
+            if ref_seq:
+                natural["binder_sequence"] = ref_seq
+                natural["route_status"] = "READY"
+                natural["note"] = (
+                    f"天然尾纤维/RBP候选 {ft['reference_fiber']} "
+                    f"（{len(ref_seq)}aa），可进入Ring9"
+                )
+            else:
+                natural["route_status"] = "PENDING_SEQUENCE"
+                natural["note"] = (
+                    f"已知天然候选 {ft['reference_fiber']}，"
+                    "但reference_sequence待补充"
+                )
+        else:
+            natural["source"] = "natural_search"
+
+            try:
+                candidates = search_natural_rbps(
+                    host_organism=ft.get("organism") or cfg._organism or "",
+                    size=30,
+                    top_n=5,
+                    fetch_sequences=False,
+                )
+            except Exception as e:
+                candidates = []
+                natural["search_error"] = str(e)
+
+            natural["natural_candidates"] = candidates
+
+            if candidates:
+                ready_candidates = [
+                    c for c in candidates
+                    if (c.get("evidence_summary") or {}).get(
+                        "ready_for_ring9", False
+                    )
+                ]
+
+                if ready_candidates:
+                    best = ready_candidates[0]
+
+                    natural["selected_candidate"] = {
+                        "accession": best.get("accession"),
+                        "protein_name": best.get("protein_name"),
+                        "source_organism": best.get("source_organism"),
+                        "evidence_summary": best.get("evidence_summary"),
+                    }
+
+                    if best.get("sequence"):
+                        natural["binder_id"] = (
+                            best.get("accession")
+                            or best.get("protein_name")
+                        )
+                        natural["binder_sequence"] = best.get("sequence")
+                        natural["route_status"] = "READY"
+                        natural["note"] = (
+                            "自动天然RBP候选已通过统一证据门控，"
+                            "且序列可用，可进入Ring9"
+                        )
+                    else:
+                        natural["route_status"] = (
+                            "EVIDENCE_READY_PENDING_SEQUENCE"
+                        )
+                        natural["note"] = (
+                            "自动天然RBP候选已通过统一证据门控，"
+                            "但序列尚未获取，暂不进入Ring9"
+                        )
+                else:
+                    natural["route_status"] = "SEARCHED_CANDIDATE"
+                    natural["note"] = (
+                        f"自动检索到 {len(candidates)} 条天然tail fiber/RBP候选；"
+                        "当前无候选满足统一Ring9证据门控"
+                    )
+            else:
+                natural["route_status"] = "NO_HIT"
+                natural["note"] = (
+                    "自动天然tail fiber/RBP检索未发现候选"
+                )
+
+        route_results.append(natural)
+
+        # =====================================================
+        # Route B: de novo binder / RBD
+        # =====================================================
+        de_novo = dict(base)
+        de_novo["route"] = "de_novo"
+        de_novo["source"] = None
+        de_novo["binder_sequence"] = None
+        de_novo["binder_id"] = None
+        de_novo["out_dir"] = None
+        de_novo["n_scaffolds"] = 0
+
+        if strategy["rfdiffusion_ok"] and ft.get("reference_pdb"):
+            de_novo["source"] = "rfdiffusion"
+            de_novo["binder_id"] = f"{ft['fiber_target']}_RBD"
+            de_novo["route_status"] = "DESIGNING" if not dry_run else "DRY_RUN"
+
+            _design_rbd(
+                designer,
+                cfg,
+                ft,
+                de_novo,
+                rbd_dir,
+                num_designs,
+                mpnn_samples,
+                dry_run,
+            )
+
+            if de_novo.get("binder_sequence"):
+                de_novo["route_status"] = "READY"
+            elif de_novo.get("source") == "rfdiffusion_error":
+                de_novo["route_status"] = "ERROR"
+
+        elif strategy["rfdiffusion_ok"] and not ft.get("reference_pdb"):
+            de_novo["source"] = "de_novo_pending"
+            de_novo["route_status"] = "PENDING_STRUCTURE"
+            de_novo["note"] = (
+                "surface_protein受体但无结构，"
+                "需先结构预测后进入de novo设计"
+            )
+
+        else:
+            de_novo["source"] = "de_novo_not_applicable"
+            de_novo["route_status"] = "NOT_APPLICABLE"
+            de_novo["note"] = (
+                "当前de novo RFdiffusion路线不直接适用于该受体类型"
+            )
+
+        route_results.append(de_novo)
+
+        results.extend(route_results)
 
         emit_event({
             "ring": 8, "ring_name": "尾纤维 binder 筛选", "status": "progress",
-            "message": f"{ft['fiber_target']}: {rec['source']}",
+            "message": (
+                f"{ft['fiber_target']}: "
+                f"{', '.join(r.get('route') + '=' + str(r.get('route_status')) for r in route_results)}"
+            ),
             "current": idx + 1, "total": total,
             "percent": int((idx + 1) * 100 / max(total, 1)), "target": ft.get("fiber_target"),
         })
@@ -162,16 +278,31 @@ def run(cfg, fiber_targets=None, state=None, num_designs=32, dry_run=False):
 
     if state is not None:
         state.set_artifact(8, "fiber_binders", results)
-        n_nat = sum(1 for r in results if r["source"] == "natural_domain")
-        n_rfd = sum(1 for r in results if r["source"] == "rfdiffusion")
-        state.mark_ring(8, "DONE",
-                        f"{n_nat} 天然结构域 / {n_rfd} 从头设计 / "
-                        f"{len(results) - n_nat - n_rfd} 待补")
+        n_nat = sum(
+            1 for r in results
+            if r.get("route") == "natural" and r.get("route_status") == "READY"
+        )
+        n_denovo = sum(
+            1 for r in results
+            if r.get("route") == "de_novo" and r.get("route_status") == "READY"
+        )
+        n_pending = sum(
+            1 for r in results
+            if str(r.get("route_status", "")).startswith("PENDING")
+        )
+
+        state.mark_ring(
+            8,
+            "DONE",
+            f"{n_nat} 天然候选READY / "
+            f"{n_denovo} de novo READY / "
+            f"{n_pending} pending"
+        )
 
     return results
 
 
-def _design_rbd(designer, cfg, ft, rec, rbd_dir, num_designs, dry_run):
+def _design_rbd(designer, cfg, ft, rec, rbd_dir, num_designs, mpnn_samples, dry_run):
     """对 surface_protein 受体做真实 RFdiffusion 从头设计 RBD。
 
     复用 RFdiffusionDesigner，RBD 专用长度 60-130aa（区别于胞内酶 40-90aa）。
@@ -181,7 +312,11 @@ def _design_rbd(designer, cfg, ft, rec, rbd_dir, num_designs, dry_run):
 
     # 结构文件：优先 data/pdbs 下已下载的 PDB，回退用 StructurePredictor 下载
     from .structure_predictor import StructurePredictor
-    pdb_dir = os.path.join(cfg.data_dir, "pdbs", "sa")
+    pdb_dir = os.path.join(
+        cfg.data_dir,
+        "pdbs",
+        cfg.organism_slug,
+    )
     os.makedirs(pdb_dir, exist_ok=True)
     pdb_path = os.path.join(pdb_dir, f"{pdb_id}.pdb")
     if not (os.path.exists(pdb_path) and os.path.getsize(pdb_path) > 1000):
@@ -207,17 +342,67 @@ def _design_rbd(designer, cfg, ft, rec, rbd_dir, num_designs, dry_run):
             ft["fiber_target"], pdb_path, chain=chain,
             num_designs=num_designs, binder_min=RBD_MIN, binder_max=RBD_MAX,
             out_dir=out_dir, dry_run=dry_run)
-        rec["n_scaffolds"] = res.get("n_scaffolds", 0)
+        rec["n_scaffolds_total"] = res.get("n_scaffolds", 0)
+
         if dry_run:
-            rec["note"] = (f"[dry-run] 将 RFdiffusion 设计 RBD "
-                           f"({RBD_MIN}-{RBD_MAX}aa, {num_designs} 骨架)")
+            rec["n_scaffolds"] = min(
+                int(num_designs),
+                int(rec["n_scaffolds_total"] or 0),
+            )
+            rec["note"] = (
+                f"[dry-run] 将 RFdiffusion 设计/复用 RBD "
+                f"({RBD_MIN}-{RBD_MAX}aa, budget={num_designs} 骨架)"
+            )
             return
 
-        # 骨架 → 序列化（ProteinMPNN + ESM），复用胞内酶 binder 同一套 MpnnEsmScorer
+        # 只让本次预算允许的 backbone 进入 ProteinMPNN/ESM。
+        # 历史缓存保留，不删除。
+        import glob
+        import re
+
+        target_id = ft["fiber_target"]
+
+        backbone_paths = sorted(
+            [
+                p
+                for p in glob.glob(os.path.join(out_dir, "*.pdb"))
+                if re.match(
+                    rf"^{re.escape(target_id)}__\d+\.pdb$",
+                    os.path.basename(p),
+                )
+            ],
+            key=lambda p: int(
+                re.search(
+                    r"__(\d+)\.pdb$",
+                    os.path.basename(p),
+                ).group(1)
+            ),
+        )
+
+        allowed_paths = backbone_paths[:max(0, int(num_designs))]
+        allowed_names = [os.path.basename(p) for p in allowed_paths]
+
+        rec["n_scaffolds"] = len(allowed_names)
+        rec["n_scaffolds_used"] = len(allowed_names)
+        rec["allowed_backbones"] = allowed_names
+
+        log().info(
+            f"  {target_id}: Ring8 本次使用 "
+            f"{len(allowed_names)}/{len(backbone_paths)} 个骨架 "
+            f"(budget={num_designs})"
+        )
+
+        # 骨架 → 序列化（ProteinMPNN + ESM）
         if rec["n_scaffolds"] > 0:
             from .mpnn_esm_scorer import MpnnEsmScorer
             scorer = MpnnEsmScorer(cfg)
-            seqs = scorer.run(out_dir, ft["fiber_target"], dry_run=dry_run)
+            seqs = scorer.run(
+                out_dir,
+                target_id,
+                num_seq_per_target=mpnn_samples,
+                allowed_pdb_names=allowed_names,
+                dry_run=dry_run,
+            )
             if seqs:
                 top1 = seqs[0]
                 rec["binder_sequence"] = top1["sequence"]

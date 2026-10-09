@@ -12,7 +12,14 @@ import os
 from .utils import load_json, save_json, log
 
 
-def run(cfg, organism: str, targets_filter=None, state=None, dry_run=False):
+def run(
+    cfg,
+    organism: str,
+    targets_filter=None,
+    state=None,
+    dry_run=False,
+    auto_top_n_targets=1,
+):
     log().info("===== 环 1：靶点分析 =====")
 
     kb = load_json(cfg.kb_path)
@@ -60,7 +67,19 @@ def run(cfg, organism: str, targets_filter=None, state=None, dry_run=False):
                     log().warning(f"  未找到靶点: {f}")
         targets = list(dict.fromkeys(filtered))  # 去重保序
     else:
-        targets = all_targets
+        # 默认自动选择适合作为胞内payload的Top-N靶点。
+        # 手动targets_filter仍具有最高优先级。
+        from .payload_target_selector import select_payload_targets
+
+        targets, target_ranking = select_payload_targets(
+            targets_meta,
+            top_n=auto_top_n_targets,
+        )
+
+        log().info(
+            f"  自动payload靶点选择 Top{auto_top_n_targets}: "
+            + ", ".join(targets)
+        )
 
     if not targets:
         log().warning("  无可用靶点（自动检索未命中且无预置库）")
@@ -75,6 +94,11 @@ def run(cfg, organism: str, targets_filter=None, state=None, dry_run=False):
         "target_meta": {t: targets_meta[t] for t in targets},
         "auto_discovered": not use_kb,
     }
+
+    if not targets_filter:
+        result["auto_target_selection"] = True
+        result["auto_top_n_targets"] = int(auto_top_n_targets)
+        result["target_ranking"] = target_ranking
     save_json(cfg.ring1_out, result)
 
     if state is not None:
