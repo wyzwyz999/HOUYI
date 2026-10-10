@@ -24,3 +24,8 @@ export HOUYI_MPNN_ROOT="/root/autodl-tmp/HOUYI/output model HOUYI/tools/ProteinM
 # ---------- ColabFold / AF2 ----------
 export HOUYI_COLABFOLD_BIN=/root/autodl-tmp/colabfold_env/bin/colabfold_batch
 export HOUYI_COLABFOLD_DATA=/root/autodl-tmp/colabfold_data
+
+# Ring4: use current base Python instead of obsolete protein_design conda env
+export HOUYI_ENV_MPNN=""
+export HOUYI_ENV_ESM=""
+export HOUYI_PYTHON="/root/miniconda3/bin/python"

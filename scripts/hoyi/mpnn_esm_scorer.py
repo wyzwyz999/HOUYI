@@ -99,9 +99,10 @@ class MpnnEsmScorer:
             return []
 
         from .backend import backend
+        python_exe = os.environ.get("HOUYI_PYTHON", "python")
         cmd = (
             "export HF_ENDPOINT=https://hf-mirror.com && "
-            f"python {shlex.quote(self._linux(script_win))}"
+            f"{shlex.quote(python_exe)} {shlex.quote(self._linux(script_win))}"
         )
         full = backend._wrap(cmd, self.env)
         r = backend.run(full)

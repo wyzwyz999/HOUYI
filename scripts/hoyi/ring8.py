@@ -91,6 +91,9 @@ def run(cfg, fiber_targets=None, state=None, num_designs=32, mpnn_samples=3, dry
     results = []
     total = len(fiber_targets)
 
+    # 一键泛化：按Ring7优先级依次尝试，已有de novo READY后停止后续重计算
+    de_novo_ready_found = False
+
     for idx, ft in enumerate(fiber_targets):
         receptor_type = ft.get("receptor_type", "surface_protein")
         strategy = RECEPTOR_DESIGN.get(receptor_type, RECEPTOR_DESIGN["surface_protein"])
@@ -224,7 +227,17 @@ def run(cfg, fiber_targets=None, state=None, num_designs=32, mpnn_samples=3, dry
         de_novo["out_dir"] = None
         de_novo["n_scaffolds"] = 0
 
-        if strategy["rfdiffusion_ok"] and ft.get("reference_pdb"):
+        if strategy["rfdiffusion_ok"] and de_novo_ready_found:
+            # 前一个更高优先级受体已经得到可执行de novo RBD，
+            # 后续候选保留但不再重复进行结构预测/RFdiffusion重计算。
+            de_novo["source"] = "de_novo_fallback_not_needed"
+            de_novo["route_status"] = "SKIPPED_AFTER_READY"
+            de_novo["note"] = (
+                "更高优先级受体已获得READY de novo RBD，"
+                "为控制计算成本跳过本候选；仅在前序路线失败时启用"
+            )
+
+        elif strategy["rfdiffusion_ok"] and ft.get("reference_pdb"):
             de_novo["source"] = "rfdiffusion"
             de_novo["binder_id"] = f"{ft['fiber_target']}_RBD"
             de_novo["route_status"] = "DESIGNING" if not dry_run else "DRY_RUN"
@@ -242,16 +255,99 @@ def run(cfg, fiber_targets=None, state=None, num_designs=32, mpnn_samples=3, dry
 
             if de_novo.get("binder_sequence"):
                 de_novo["route_status"] = "READY"
+                de_novo_ready_found = True
             elif de_novo.get("source") == "rfdiffusion_error":
                 de_novo["route_status"] = "ERROR"
 
         elif strategy["rfdiffusion_ok"] and not ft.get("reference_pdb"):
-            de_novo["source"] = "de_novo_pending"
-            de_novo["route_status"] = "PENDING_STRUCTURE"
-            de_novo["note"] = (
-                "surface_protein受体但无结构，"
-                "需先结构预测后进入de novo设计"
+            receptor_seq = (
+                ft.get("reference_sequence")
+                or ft.get("sequence")
+                or ""
             )
+
+            if not receptor_seq:
+                de_novo["source"] = "de_novo_pending"
+                de_novo["route_status"] = "PENDING_STRUCTURE"
+                de_novo["note"] = (
+                    "surface_protein受体无PDB且无可用氨基酸序列，"
+                    "无法自动结构预测"
+                )
+
+            elif dry_run:
+                de_novo["source"] = "chai1_pending"
+                de_novo["route_status"] = "DRY_RUN"
+                de_novo["note"] = (
+                    "[dry-run] 将从受体序列自动Chai-1预测结构，"
+                    "随后RFdiffusion设计de novo RBD"
+                )
+
+            else:
+                # Cold-start自动结构获取：
+                # 有序列、无PDB时直接复用HOUYI现有StructurePredictor。
+                from .structure_predictor import StructurePredictor
+
+                pdb_dir = os.path.join(
+                    cfg.data_dir,
+                    "pdbs",
+                    cfg.organism_slug,
+                )
+                os.makedirs(pdb_dir, exist_ok=True)
+
+                predictor = StructurePredictor(cfg)
+
+                log().info(
+                    f"  {ft['fiber_target']}: 无现成PDB，"
+                    f"自动Chai-1预测受体结构（{len(receptor_seq)}aa）"
+                )
+
+                predicted_pdb = predictor.predict_chai1(
+                    receptor_seq,
+                    ft["fiber_target"],
+                    pdb_dir,
+                )
+
+                if predicted_pdb:
+                    ft_with_structure = dict(ft)
+                    ft_with_structure["reference_pdb"] = predicted_pdb
+                    ft_with_structure["pdb_chain"] = "A"
+
+                    de_novo["source"] = "rfdiffusion"
+                    de_novo["structure_source"] = "chai1"
+                    de_novo["predicted_receptor_pdb"] = predicted_pdb
+                    de_novo["binder_id"] = f"{ft['fiber_target']}_RBD"
+                    de_novo["route_status"] = "DESIGNING"
+
+                    _design_rbd(
+                        designer,
+                        cfg,
+                        ft_with_structure,
+                        de_novo,
+                        rbd_dir,
+                        num_designs,
+                        mpnn_samples,
+                        dry_run,
+                    )
+
+                    if de_novo.get("binder_sequence"):
+                        de_novo["route_status"] = "READY"
+                        de_novo_ready_found = True
+                    elif de_novo.get("source") == "rfdiffusion_error":
+                        de_novo["route_status"] = "ERROR"
+                    else:
+                        de_novo["route_status"] = "NO_READY_RBD"
+                        de_novo["note"] = (
+                            "受体结构预测成功，但本轮de novo RBD设计"
+                            "未产生可进入Ring9的序列"
+                        )
+
+                else:
+                    de_novo["source"] = "chai1_structure_error"
+                    de_novo["route_status"] = "STRUCTURE_ERROR"
+                    de_novo["note"] = (
+                        "受体有氨基酸序列，但Chai-1自动结构预测失败；"
+                        "将允许后续低优先级受体继续尝试"
+                    )
 
         else:
             de_novo["source"] = "de_novo_not_applicable"

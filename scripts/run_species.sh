@@ -67,6 +67,41 @@ else:
 PY
 
 echo
+echo
+echo "===== Ring4 / ESM2 preflight ====="
+
+PYTHON_BIN="${HOUYI_PYTHON:-/root/miniconda3/bin/python}"
+
+test -x "$PYTHON_BIN" || {
+    echo "PRECHECK FAILED: Python不存在: $PYTHON_BIN"
+    exit 1
+}
+
+test -f "$HOUYI_MPNN" || {
+    echo "PRECHECK FAILED: ProteinMPNN脚本不存在: $HOUYI_MPNN"
+    exit 1
+}
+
+"$PYTHON_BIN" - <<'PYCHECK'
+import sys
+import torch
+import transformers
+from transformers import AutoTokenizer, AutoModelForMaskedLM
+
+print("Python:", sys.executable)
+print("torch:", torch.__version__)
+print("transformers:", transformers.__version__)
+print("Ring4 imports: OK")
+
+if not torch.cuda.is_available():
+    raise SystemExit("PRECHECK FAILED: Ring4 CUDA unavailable")
+
+print("Ring4 GPU:", torch.cuda.get_device_name(0))
+PYCHECK
+
+echo "Ring4 / ESM2 OK"
+echo
+
 echo "[5/5] 启动完整 HOUYI Ring1 -> Ring10"
 echo
 
