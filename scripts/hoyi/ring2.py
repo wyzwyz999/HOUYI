@@ -35,7 +35,7 @@ def run(cfg, targets, state=None, dry_run=False):
         kb = load_json(cfg.kb_path, default={"targets": {}})
         target_meta = kb.get("targets", {})
 
-    pdb_dir = os.path.join(cfg.data_dir, "pdbs", _org_slug(cfg.data_source.get("kb", "")))
+    pdb_dir = os.path.join(cfg.data_dir, "pdbs", cfg.organism_slug)
     os.makedirs(pdb_dir, exist_ok=True)
 
     predictor = StructurePredictor(cfg)

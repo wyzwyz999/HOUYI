@@ -16,6 +16,8 @@ import os
 import re
 import shlex
 import statistics
+import subprocess
+import time
 from pathlib import Path
 
 from .utils import log, save_json
@@ -165,21 +167,21 @@ class AF2Validator:
                         num_seeds=3,
                         num_recycles=6,
                         dry_run=False):
-        """调用 ColabFold/AF2-Multimer 验证一个 target:binder FASTA。"""
-
+        """Two-stage ColabFold validation: cached MSA then AF2 inference."""
         from .backend import backend
 
         fasta_path = Path(fasta_path)
         out_dir = Path(out_dir)
 
         if not fasta_path.exists():
-            raise FileNotFoundError(f"AF2 FASTA不存在: {fasta_path}")
+            raise FileNotFoundError(
+                f"AF2 FASTA不存在: {fasta_path}"
+            )
 
         colabfold_bin = os.environ.get(
             "HOUYI_COLABFOLD_BIN",
             "colabfold_batch",
         )
-
         data_dir = os.environ.get(
             "HOUYI_COLABFOLD_DATA",
             "",
@@ -202,11 +204,46 @@ class AF2Validator:
 
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        cmd = " ".join([
+        msa_timeout = int(
+            os.environ.get("HOUYI_AF2_MSA_TIMEOUT", "900")
+        )
+        msa_retries = max(
+            1,
+            int(os.environ.get("HOUYI_AF2_MSA_RETRIES", "2"))
+        )
+
+        msa_dir = out_dir.parent / "msa_cache"
+        msa_dir.mkdir(parents=True, exist_ok=True)
+
+        # ColabFold按FASTA header而不是输入文件名生成A3M
+        first_header = ""
+        with fasta_path.open(encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith(">"):
+                    first_header = line[1:].strip().split()[0]
+                    break
+
+        if not first_header:
+            raise ValueError(
+                f"AF2 FASTA缺少有效header: {fasta_path}"
+            )
+
+        expected_a3m = msa_dir / f"{first_header}.a3m"
+
+        msa_cmd = " ".join([
             shlex.quote(colabfold_bin),
             shlex.quote(str(fasta_path)),
-            shlex.quote(str(out_dir)),
+            shlex.quote(str(msa_dir)),
+            "--msa-only",
             "--msa-mode", "mmseqs2_uniref_env",
+            "--pair-mode", "unpaired_paired",
+            "--pair-strategy", "greedy",
+        ])
+
+        predict_cmd = " ".join([
+            shlex.quote(colabfold_bin),
+            shlex.quote(str(expected_a3m)),
+            shlex.quote(str(out_dir)),
             "--pair-mode", "unpaired_paired",
             "--pair-strategy", "greedy",
             "--model-type", "alphafold2_multimer_v3",
@@ -218,42 +255,109 @@ class AF2Validator:
         ])
 
         log().info(
-            f"AF2/ColabFold: models={num_models}, "
-            f"seeds={num_seeds}, recycles={num_recycles}"
+            f"AF2 two-stage: models={num_models}, "
+            f"seeds={num_seeds}, recycles={num_recycles}, "
+            f"MSA timeout={msa_timeout}s, retries={msa_retries}"
         )
 
         if dry_run:
-            log().info(f"[dry-run] {cmd}")
+            log().info(f"[dry-run][MSA] {msa_cmd}")
+            log().info(f"[dry-run][AF2] {predict_cmd}")
             return {
                 "returncode": 0,
-                "command": cmd,
+                "command": predict_cmd,
+                "msa_command": msa_cmd,
+                "a3m": str(expected_a3m),
                 "out_dir": str(out_dir),
                 "dry_run": True,
             }
 
+        # Stage 1: MSA
+        if (
+            expected_a3m.exists()
+            and expected_a3m.stat().st_size > 100
+        ):
+            log().info(
+                f"复用已有MSA缓存: {expected_a3m}"
+            )
+        else:
+            msa_ok = False
+
+            for attempt in range(1, msa_retries + 1):
+                log().info(
+                    f"MSA阶段 attempt "
+                    f"{attempt}/{msa_retries}"
+                )
+
+                try:
+                    r_msa = backend.run(
+                        msa_cmd,
+                        env_name=None,
+                        timeout=msa_timeout,
+                        capture=False,
+                        text=True,
+                    )
+                except subprocess.TimeoutExpired:
+                    log().warning(
+                        f"MSA超时 > {msa_timeout}s"
+                    )
+                    if attempt < msa_retries:
+                        time.sleep(10)
+                    continue
+
+                if (
+                    r_msa.returncode == 0
+                    and expected_a3m.exists()
+                    and expected_a3m.stat().st_size > 100
+                ):
+                    msa_ok = True
+                    break
+
+                log().warning(
+                    f"MSA失败 returncode="
+                    f"{r_msa.returncode}"
+                )
+
+                if attempt < msa_retries:
+                    time.sleep(10)
+
+            if not msa_ok:
+                raise RuntimeError(
+                    "ColabFold MSA阶段最终失败"
+                )
+
+            log().info(
+                f"MSA已缓存: {expected_a3m}"
+            )
+
+        # Stage 2: AF2 inference
+        log().info(
+            f"AF2阶段读取缓存A3M: {expected_a3m}"
+        )
+
         r = backend.run(
-            cmd,
+            predict_cmd,
             env_name=None,
             timeout=None,
-            capture=True,
+            capture=False,
             text=True,
         )
 
         if r.returncode != 0:
-            stderr_tail = (r.stderr or "").strip()[-2000:]
             raise RuntimeError(
-                f"ColabFold运行失败，returncode={r.returncode}\n"
-                f"{stderr_tail}"
+                f"ColabFold AF2阶段失败，"
+                f"returncode={r.returncode}"
             )
 
         return {
             "returncode": r.returncode,
-            "command": cmd,
+            "command": predict_cmd,
+            "msa_command": msa_cmd,
+            "a3m": str(expected_a3m),
             "out_dir": str(out_dir),
-            "stdout": r.stdout,
-            "stderr": r.stderr,
+            "stdout": None,
+            "stderr": None,
         }
-
 
     def validate_selected_candidates(
         self,

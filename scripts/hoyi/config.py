@@ -113,8 +113,19 @@ class Config:
         return os.path.join(self.base_win, "data")
 
     @property
-    def results_dir(self):
+    def results_root(self):
+        """所有 HOUYI 结果的总根目录。"""
         return os.path.join(self.base_win, "results")
+
+    @property
+    def results_dir(self):
+        """按菌种隔离的结果目录，避免不同菌互相覆盖。"""
+        slug = self.organism_slug if self._organism else "_unassigned"
+        return os.path.join(
+            self.results_root,
+            "by_organism",
+            slug,
+        )
 
     def set_organism(self, organism: str):
         """根据细菌名切换数据源。未匹配到已知菌种时保持默认（金葡菌）。"""
@@ -124,6 +135,24 @@ class Config:
     @property
     def data_source(self):
         return self._data_source or ORGANISM_DATA["staphylococcus"]
+
+    @property
+    def organism_slug(self):
+        """为任意输入菌种生成独立、安全、可复现的目录名。"""
+        if self._data_source is not None:
+            o = self._organism.lower()
+            if "staphylococcus" in o:
+                return "sa"
+            if "mycobacterium" in o:
+                return "mtb"
+            if "acinetobacter" in o:
+                return "ab"
+            if "klebsiella" in o:
+                return "kp"
+
+        import re
+        slug = re.sub(r"[^a-z0-9]+", "_", self._organism.lower()).strip("_")
+        return slug or "unknown"
 
     @property
     def kb_path(self):

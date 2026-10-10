@@ -1,0 +1,83 @@
+{
+  "module": "tail_fiber_targets",
+  "description": "HOUYI 尾纤维靶向重定向目标库：将 PVC/eCIS 的尾部受体识别模块重定向到病原菌表面受体。用于环7（尾纤维靶点分析）自动打分与优先级排序。",
+  "scoring_weights": {
+    "exposure": 0.30,
+    "essentiality": 0.20,
+    "specificity": 0.20,
+    "template_availability": 0.15,
+    "species_coverage": 0.15
+  },
+  "targets": {
+    "SA_WTA_GlcNAc": {
+      "protein": "壁磷壁酸(WTA) β-O-GlcNAc 修饰",
+      "gene": "tarS (WTA 糖基转移酶产物)",
+      "receptor_type": "surface_carbohydrate",
+      "organism": "Staphylococcus aureus",
+      "reference_fiber": "Gp45 (phage φ11)",
+      "reference_uniprot": "P06453",
+      "reference_pdb": null,
+      "reference_sequence": "DNKLITDLSRVFDYRYVDENEYNFKLISDMLTDFNFSLEYHRNKEVFAHNGEQIKYEHLNVTSSVSDFLTYLNGRFSNMVLGHNGDGINEVKDARVDNTGYDHKTLQDRLYHDYSTLDAFTKKVEKAVDENYKEYRATEYRFEPKEQEPEFITDLSPYTNAVMQSFWVDPRTKIIYMTQARPGNHYMLSRLKPNGQFIDRLLVKNGGHGTHNAYRYIGNELWIYSAVLDANENNKFVRFQYRTGEITYGNEMQDVMPNIFNDRYTSAIYNPIENLMIFRREYKASERQLKNSLNFVEVRSADDIDKGIDKVLYQMDIPMEYTSDTQPMQGITYDAGILYWYTGDSKPANPNYLQGFDIKTKELLFKRRIDIGGVNNNFKGDFQEAEGLDMYYDLETGRKALLIGVTIGPGNNRHHSIYSIGQRGVNQFLKNIAPQVSMTDSGGRVKPLPIQNPAYLSDITEVGHYYIYTQDTQNALDFPLPKAFRDAGWFFDVLPGHYNGALRQVLTRNSTGRNMLKFERVIDIFNKKNNGAWNFCPQNAGYWEHIPKSITKLSDLKIVGLDFYITTEESNRFTDFPKDFKGIAGWILEVKSNTPGNTTQVLRRNNFPSAHQFLVRNFGTGGVGKWSLFEGKVVE",
+      "binding_site": "WTA 核糖醇磷酸主链上的 β-O-GlcNAc 侧链",
+      "exposure": 0.95,
+      "essentiality": 0.85,
+      "specificity": 0.90,
+      "template_availability": 0.80,
+      "species_coverage": 0.70,
+      "mechanism_class": "tail_fiber_redirect",
+      "note": "Gp45 通过识别 WTA 上的 GlcNAc 修饰实现金葡菌特异结合，是本平台尾纤维重定向的首个验证靶点。"
+    },
+    "SA_LTA": {
+      "protein": "脂磷壁酸(LTA)",
+      "gene": "ltaS",
+      "receptor_type": "surface_carbohydrate",
+      "organism": "Staphylococcus aureus",
+      "reference_fiber": null,
+      "reference_uniprot": null,
+      "reference_pdb": null,
+      "binding_site": "LTA 甘油磷酸主链",
+      "exposure": 0.90,
+      "essentiality": 0.80,
+      "specificity": 0.75,
+      "template_availability": 0.40,
+      "species_coverage": 0.65,
+      "mechanism_class": "tail_fiber_redirect",
+      "note": "LTA 是革兰氏阳性菌通用表面抗原，特异性低于 WTA-GlcNAc。"
+    },
+    "SA_Capsule_CP5": {
+      "protein": "荚膜多糖 CP5/CP8",
+      "gene": "cap5/cap8 基因簇",
+      "receptor_type": "capsule_polysaccharide",
+      "organism": "Staphylococcus aureus",
+      "reference_fiber": null,
+      "reference_uniprot": null,
+      "reference_pdb": null,
+      "binding_site": "荚膜多糖重复单元",
+      "exposure": 0.95,
+      "essentiality": 0.50,
+      "specificity": 0.85,
+      "template_availability": 0.30,
+      "species_coverage": 0.60,
+      "mechanism_class": "tail_fiber_redirect",
+      "note": "荚膜是重要毒力因子与疫苗靶点，但不同血清型差异大。"
+    },
+    "SA_SpA": {
+      "protein": "葡萄球菌蛋白 A (Protein A / SpA)",
+      "gene": "spa",
+      "receptor_type": "surface_protein",
+      "organism": "Staphylococcus aureus",
+      "reference_fiber": null,
+      "reference_uniprot": "P02976",
+      "reference_pdb": "1BDD",
+      "pdb_chain": "A",
+      "binding_site": "SpA B 结构域（IgG Fc 结合域，表面暴露）",
+      "exposure": 0.90,
+      "essentiality": 0.60,
+      "specificity": 0.85,
+      "template_availability": 0.75,
+      "species_coverage": 0.70,
+      "mechanism_class": "tail_fiber_redirect",
+      "note": "表面蛋白受体示范靶点：SpA 是金葡菌表面最丰富的蛋白之一，B 结构域有单链高分辨率结构（1BDD，58aa），用于验证尾纤维 RBD 从头设计路径（surface_protein → RFdiffusion）。"
+    }
+  }
+}

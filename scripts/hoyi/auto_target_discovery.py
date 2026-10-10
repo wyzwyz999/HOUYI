@@ -14,6 +14,7 @@ import sys
 import time
 import json
 import subprocess
+import shutil
 import urllib.parse
 
 from .utils import log
@@ -79,14 +80,26 @@ CATEGORY_MAX_PER_TYPE = {
 
 
 def _curl_json(url, retries=3):
+    curl_bin = shutil.which("curl") or shutil.which("curl.exe")
+    if not curl_bin:
+        log().error("  [自动检索] 未找到 curl/curl.exe")
+        return None
+
     for i in range(retries):
         try:
-            r = subprocess.run(["curl.exe", "-s", "-m", "30", url],
-                               capture_output=True, text=True, encoding="utf-8")
+            r = subprocess.run(
+                [curl_bin, "-s", "-m", "30", url],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
             if r.returncode == 0 and r.stdout.strip():
                 return json.loads(r.stdout)
-        except Exception:
-            pass
+            log().warning(
+                f"  [自动检索] curl 请求失败: returncode={r.returncode}"
+            )
+        except Exception as e:
+            log().warning(f"  [自动检索] 请求异常: {e}")
         time.sleep(1.5)
     return None
 

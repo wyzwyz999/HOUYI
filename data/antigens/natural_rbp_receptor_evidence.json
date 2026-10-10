@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "description": "Curated public evidence linking natural phage RBPs/tail fibers to bacterial receptors. Not wet-lab benchmark data.",
+  "records": [
+    {
+      "evidence_id": "SA_PHI11_GP45_WTA_001",
+      "host_organism": "Staphylococcus aureus",
+      "phage": "Staphylococcus phage phi11",
+      "protein_name": "Gp45",
+      "accession": null,
+      "receptor_class": "wall_teichoic_acid",
+      "receptor_detail": "alpha- or beta-O-GlcNAc-modified WTA",
+      "evidence_type": "experimental_direct",
+      "evidence_strength": "high",
+      "source": "published_literature",
+      "ready_for_receptor_mapping": true,
+      "notes": "Gp45 experimentally implicated in phi11 adsorption; WTA GlcNAc is a key receptor component. Accession mapping to be verified separately."
+    }
+  ]
+}

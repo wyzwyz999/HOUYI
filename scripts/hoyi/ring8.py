@@ -310,25 +310,54 @@ def _design_rbd(designer, cfg, ft, rec, rbd_dir, num_designs, mpnn_samples, dry_
     pdb_id = ft.get("reference_pdb")
     chain = ft.get("pdb_chain", "A")
 
-    # 结构文件：优先 data/pdbs 下已下载的 PDB，回退用 StructurePredictor 下载
+    # 结构来源兼容：
+    # 1) reference_pdb 若已经是本地 PDB 路径，直接使用；
+    # 2) 否则按传统 PDB ID 在 data/pdbs 中查找 / 从 RCSB 下载。
     from .structure_predictor import StructurePredictor
-    pdb_dir = os.path.join(
-        cfg.data_dir,
-        "pdbs",
-        cfg.organism_slug,
-    )
-    os.makedirs(pdb_dir, exist_ok=True)
-    pdb_path = os.path.join(pdb_dir, f"{pdb_id}.pdb")
-    if not (os.path.exists(pdb_path) and os.path.getsize(pdb_path) > 1000):
-        if dry_run:
-            rec["note"] = f"[dry-run] 将下载 {pdb_id} 并 RFdiffusion 设计 RBD"
-            return
-        predictor = StructurePredictor(cfg)
-        pdb_path = predictor.download_pdb(pdb_id, pdb_dir)
-        if not pdb_path:
-            rec["source"] = "rfdiffusion_no_structure"
-            rec["note"] = f"受体 {pdb_id} 结构下载失败，无法设计 RBD"
-            return
+
+    if (
+        pdb_id
+        and os.path.isfile(pdb_id)
+        and os.path.getsize(pdb_id) > 1000
+    ):
+        pdb_path = os.path.abspath(pdb_id)
+        log().info(
+            f"  {ft['fiber_target']}: 使用本地受体结构 {pdb_path}"
+        )
+        rec["structure_source"] = "local_pdb"
+    else:
+        pdb_dir = os.path.join(
+            cfg.data_dir,
+            "pdbs",
+            cfg.organism_slug,
+        )
+        os.makedirs(pdb_dir, exist_ok=True)
+
+        pdb_path = os.path.join(pdb_dir, f"{pdb_id}.pdb")
+
+        if not (
+            os.path.exists(pdb_path)
+            and os.path.getsize(pdb_path) > 1000
+        ):
+            if dry_run:
+                rec["note"] = (
+                    f"[dry-run] 将下载 {pdb_id} 并 RFdiffusion 设计 RBD"
+                )
+                return
+
+            predictor = StructurePredictor(cfg)
+            pdb_path = predictor.download_pdb(pdb_id, pdb_dir)
+
+            if not pdb_path:
+                rec["source"] = "rfdiffusion_no_structure"
+                rec["route_status"] = "ERROR"
+                rec["note"] = (
+                    f"受体 {pdb_id} 既不是有效本地PDB，"
+                    "也无法从RCSB下载，无法设计 RBD"
+                )
+                return
+
+        rec["structure_source"] = "rcsb_pdb"
 
     out_dir = os.path.join(rbd_dir, ft["fiber_target"], "rfdiffusion")
     if not dry_run:

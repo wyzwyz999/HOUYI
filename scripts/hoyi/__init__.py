@@ -64,8 +64,8 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
         af2_recycles: AF2 recycle 数
     """
     skip = skip or []
+    cfg.set_organism(organism)  # 先确定菌种，确保 results_dir 按菌隔离
     cfg.ensure_dirs()
-    cfg.set_organism(organism)  # 按细菌名切换数据源
     from .utils import set_dry_run, ensure_clean_organism
     set_dry_run(dry_run)
     # 检测 organism 变更并清理跨菌种残留（避免 KP 残留污染金葡菌等）

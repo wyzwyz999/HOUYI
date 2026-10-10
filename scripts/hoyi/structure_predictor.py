@@ -81,11 +81,27 @@ class StructurePredictor:
         with open(script_win, "w", encoding="utf-8") as f:
             f.write(pred_script)
 
-        conda_base = os.environ.get("HOUYI_CONDA_BASE", "~/miniforge3/etc/profile.d/conda.sh")
-        full = (f"source {conda_base} && conda activate {self.env} && "
+        from .backend import backend
+
+        if backend.mode == "wsl":
+            conda_base = os.environ.get(
+                "HOUYI_CONDA_BASE",
+                "~/miniforge3/etc/profile.d/conda.sh"
+            )
+            full = (
+                f"source {conda_base} && "
+                f"conda activate {self.env} && "
                 f"export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && "
                 f"export DISABLE_PANDERA_IMPORT_WARNING=True && "
-                f"python {self._linux(script_win)}")
+                f"python {self._linux(script_win)}"
+            )
+        else:
+            # native/container：直接复用当前已验证可 import chai_lab 的 Python
+            full = (
+                f"export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True && "
+                f"export DISABLE_PANDERA_IMPORT_WARNING=True && "
+                f"python {self._linux(script_win)}"
+            )
         log().info(f"  {target_id}: Chai-1 预测结构（{len(sequence)}aa）...")
 
         # Chai-1 是重计算任务，偶发资源竞争（WSL 内存尖峰/GPU 显存碎片）会导致瞬时失败。
