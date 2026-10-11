@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "approved_organisms": {
+    "synthetic_smoke": {
+      "organism": "synthetic_smoke",
+      "fiber_targets": [
+        "SYNTHETIC_SURFACE_TARGET"
+      ],
+      "approval_note": "Synthetic engineering fixture only"
+    }
+  }
+}
