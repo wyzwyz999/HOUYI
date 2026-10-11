@@ -112,7 +112,18 @@ def search_reviewed_proteins(organism, size=200):
         "size": size, "format": "json",
     })
     data = _curl_json(url)
-    return (data or {}).get("results", [])
+    if data is None:
+        raise RuntimeError("UNIPROT_REQUEST_FAILED")
+    if not isinstance(data, dict):
+        raise ValueError("UNIPROT_INVALID_RESPONSE")
+    results = data.get("results")
+    if not isinstance(results, list):
+        raise ValueError("UNIPROT_INVALID_RESULTS")
+
+    if len(results) >= size:
+        raise RuntimeError("UNIPROT_COMPLETENESS_UNCONFIRMED")
+
+    return results
 
 
 def _extract_info(result):

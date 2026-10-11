@@ -82,9 +82,7 @@ def run(cfg, fiber_targets=None, state=None, num_designs=32, mpnn_samples=3, dry
 
     # 尾纤维 RBD 结构目录（与胞内酶 binder 分开）
     rbd_dir = os.path.join(
-        cfg.data_dir,
-        "designs",
-        cfg.organism_slug,
+        cfg.results_dir,
         "tail_fiber_rbd",
     )
 

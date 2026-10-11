@@ -86,6 +86,12 @@ class State:
         self.cfg = cfg
         self.data: Dict[str, Any] = self._load()
 
+        # Keep state metadata synchronized with the organism already set on Config.
+        organism = getattr(cfg, "_organism", "") or None
+        if organism and self.data.get("organism") != organism:
+            self.data["organism"] = organism
+            self.save()
+
     def _load(self) -> Dict[str, Any]:
         p = self.cfg.state_path
         if os.path.exists(p):

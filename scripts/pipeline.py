@@ -129,6 +129,14 @@ def main():
             af2_recycles=args.af2_recycles,
         )
     except Exception as e:
+        try:
+            from hoyi.records import fail_latest_run_record
+            failed_path = fail_latest_run_record(cfg, e)
+            if failed_path:
+                print(f"[RunRecord] 已记录 ERROR: {failed_path}")
+        except Exception as record_error:
+            print(f"[warning] RunRecord 异常收尾失败: {record_error}")
+
         print(f"\n[FATAL] 管线执行失败: {e}")
         sys.exit(1)
 

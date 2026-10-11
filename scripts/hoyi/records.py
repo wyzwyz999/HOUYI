@@ -191,3 +191,39 @@ def save_run_record(cfg, record):
 
     log().info(f"RunRecord: {out_path}")
     return out_path
+
+
+def fail_latest_run_record(cfg, error):
+    """异常退出时，将当前菌种目录下最新的 RUNNING RunRecord 标记为 ERROR。"""
+    import glob
+    import json
+    import os
+    import time
+
+    runs_dir = os.path.join(cfg.results_dir, "runs")
+    paths = sorted(
+        glob.glob(os.path.join(runs_dir, "*.json")),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as f:
+                record = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        if record.get("status") != "RUNNING":
+            continue
+
+        record["status"] = "ERROR"
+        record["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        record["error"] = str(error)
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+
+        return path
+
+    return None

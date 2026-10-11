@@ -418,7 +418,7 @@ def run(cfg, fiber_targets=None, state=None, dry_run=False):
                     )
 
     if not candidates:
-        log().warning("  无可用尾纤维靶点，跳过")
+        log().warning("  Ring7 无候选：数据完整性尚未确认，按阻塞处理")
         save_json(cfg.ring7_out, [])
 
         if state is not None:
@@ -426,7 +426,7 @@ def run(cfg, fiber_targets=None, state=None, dry_run=False):
             state.mark_ring(
                 7,
                 "SKIPPED",
-                "无尾纤维靶点",
+                "Ring7空候选（数据完整性未确认）",
             )
 
         return []
