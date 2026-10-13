@@ -4,7 +4,6 @@
 > 目标是兑现"任意细菌"承诺：给定细菌名，自动检索毒力/耐药/表面靶点，设计纳米注射器载荷。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Docker](https://img.shields.io/badge/Docker-GHCR-blue)](https://github.com/YOUR_ORG/hoyi/pkgs/container/hoyi)
 
 ---
 
@@ -13,31 +12,31 @@
 ### 方式 1：Docker 一行跑（推荐，无需配环境）
 
 ```bash
-# 拉镜像（自动构建发布在 GHCR）
-docker pull ghcr.io/YOUR_ORG/hoyi:latest
+# 本地构建 Docker 镜像
+docker build -t houyi -f docker/Dockerfile .
 
 # 跑金葡菌（预置知识库）
 docker run --gpus all -v $(pwd)/data:/app/data -v $(pwd)/results:/app/results \
-  ghcr.io/YOUR_ORG/hoyi:latest python pipeline.py --organism "Staphylococcus aureus"
+  houyi python pipeline.py --organism "Staphylococcus aureus"
 
 # 跑任意新细菌（自动检索兜底，无需预置库）
 docker run --gpus all -v $(pwd)/data:/app/data -v $(pwd)/results:/app/results \
-  ghcr.io/YOUR_ORG/hoyi:latest python pipeline.py --organism "Pseudomonas aeruginosa"
+  houyi python pipeline.py --organism "Pseudomonas aeruginosa"
 ```
 
 ### 方式 2：无 GPU 的 CPU 体验（dry-run / 轻量环）
 
 ```bash
 # 环1 靶点分析 + 环2 结构预测的 dry-run（不落盘、不依赖 GPU）
-docker run --rm ghcr.io/YOUR_ORG/hoyi:latest \
+docker run --rm houyi \
   python pipeline.py --organism "Pseudomonas aeruginosa" --start 1 --stop 2 --dry-run
 ```
 
 ### 方式 3：本地源码运行（开发者）
 
 ```bash
-git clone https://github.com/YOUR_ORG/hoyi.git
-cd hoyi/scripts
+git clone https://github.com/wyzwyz999/HOUYI.git
+cd HOUYI/scripts
 python pipeline.py --organism "Staphylococcus aureus" --dry-run
 ```
 

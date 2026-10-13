@@ -40,7 +40,7 @@ RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.s
     && rm /tmp/miniconda.sh \
     && /opt/conda/bin/conda clean -afy
 
-ENV PATH=/opt/conda/bin:$PATH
+ENV PATH=/opt/conda/envs/protein_design/bin:/opt/conda/bin:$PATH
 
 # ============ Python 环境（torch 2.5.1 + cu121，对齐开发机） ============
 RUN conda create -n protein_design python=3.11 -y \
