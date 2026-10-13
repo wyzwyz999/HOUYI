@@ -40,8 +40,13 @@ def test_artifact_list_no_orphan():
 
 
 def test_diviva_pdb_valid():
-    """B4: DivIVA 的 pdb 字段应是合法 PDB ID（非 '2WUJ (B.subtilis 同源)'）。"""
+    """B4: 若旧版 DivIVA 知识库存在，则检查其 PDB 字段。"""
     cfg = Config()
+
+    if not os.path.exists(cfg.kb_path):
+        print("  - 跳过 DivIVA PDB 检查：当前泛化版本未提供旧版 target KB")
+        return
+
     kb = json.load(open(cfg.kb_path, encoding="utf-8"))
     diviva = kb["targets"]["F1_DivIVA"]
     pdb = diviva.get("pdb", "")

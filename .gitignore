@@ -1,0 +1,14 @@
+results/
+af2_smoke_final/
+*_results/
+*.tar.gz
+*.zip
+data/designs/
+data/pdbs/
+__pycache__/
+*.pyc
+*.bak
+*.bak_*
+*.tmp
+.env
+*.log

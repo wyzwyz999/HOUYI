@@ -16,6 +16,7 @@ import json
 import subprocess
 import shutil
 import urllib.parse
+import requests
 
 from .utils import log
 
@@ -104,26 +105,81 @@ def _curl_json(url, retries=3):
     return None
 
 
-def search_reviewed_proteins(organism, size=200):
+def search_reviewed_proteins(organism, size=500, max_pages=20):
+    """分页检索 UniProt reviewed 蛋白，并确认结果完整。"""
+    if not 1 <= size <= 500:
+        raise ValueError("Invalid UniProt page size")
+    if max_pages < 1:
+        raise ValueError("Invalid UniProt max_pages")
+
     q = f'organism_name:"{organism}" AND reviewed:true'
-    url = "https://rest.uniprot.org/uniprotkb/search?" + urllib.parse.urlencode({
+    base_url = "https://rest.uniprot.org/uniprotkb/search"
+    params = {
         "query": q,
         "fields": "accession,gene_names,protein_name,length,cc_function,organism_name",
-        "size": size, "format": "json",
-    })
-    data = _curl_json(url)
-    if data is None:
-        raise RuntimeError("UNIPROT_REQUEST_FAILED")
-    if not isinstance(data, dict):
-        raise ValueError("UNIPROT_INVALID_RESPONSE")
-    results = data.get("results")
-    if not isinstance(results, list):
-        raise ValueError("UNIPROT_INVALID_RESULTS")
+        "size": size,
+        "format": "json",
+    }
 
-    if len(results) >= size:
+    all_results = []
+    seen = set()
+    total = None
+    url = base_url
+    pages = 0
+
+    try:
+        with requests.Session() as session:
+            while url is not None and pages < max_pages:
+                response = session.get(
+                    url,
+                    params=params,
+                    timeout=30,
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                if not isinstance(data, dict):
+                    raise RuntimeError("UNIPROT_INVALID_RESPONSE")
+
+                batch = data.get("results")
+                if not isinstance(batch, list):
+                    raise RuntimeError("UNIPROT_INVALID_RESULTS")
+
+                if total is None:
+                    header = response.headers.get("x-total-results")
+                    if header is not None:
+                        total = int(header)
+
+                for record in batch:
+                    if not isinstance(record, dict):
+                        raise RuntimeError("UNIPROT_INVALID_RECORD")
+                    accession = record.get("primaryAccession")
+                    if not accession:
+                        raise RuntimeError("UNIPROT_MISSING_ACCESSION")
+                    if accession not in seen:
+                        seen.add(accession)
+                        all_results.append(record)
+
+                pages += 1
+                url = response.links.get("next", {}).get("url")
+                params = None
+
+    except requests.RequestException as exc:
+        raise RuntimeError(f"UNIPROT_REQUEST_FAILED: {exc}") from exc
+    except ValueError as exc:
+        raise RuntimeError(f"UNIPROT_INVALID_RESPONSE: {exc}") from exc
+
+    if url is not None:
         raise RuntimeError("UNIPROT_COMPLETENESS_UNCONFIRMED")
 
-    return results
+    if total is None or len(all_results) != total:
+        raise RuntimeError(
+            f"UNIPROT_COMPLETENESS_UNCONFIRMED: "
+            f"retrieved={len(all_results)} reported_total={total}"
+        )
+
+    return all_results
+
 
 
 def _extract_info(result):

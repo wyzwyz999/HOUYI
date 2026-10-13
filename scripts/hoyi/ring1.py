@@ -48,7 +48,7 @@ def run(
                 targets_meta = auto_discover_targets(organism)
             except Exception as e:
                 log().error(f"  自动检索失败: {e}")
-                targets_meta = {}
+                raise
 
     # 可选过滤（靶点可控：用户手动指定）
     all_targets = list(targets_meta.keys())
