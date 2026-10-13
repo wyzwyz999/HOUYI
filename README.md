@@ -94,3 +94,46 @@ python pipeline.py --organism "Staphylococcus aureus" --dry-run
 ## 许可证
 
 MIT License — 详见 [LICENSE](LICENSE)。
+## 部署说明
+
+### 获取代码
+
+稳定版本：
+
+```bash
+git clone https://github.com/wyzwyz999/HOUYI.git
+cd HOUYI
+```
+
+开发分支：
+
+```bash
+git clone -b sync-e2e-20261009 https://github.com/wyzwyz999/HOUYI.git
+cd HOUYI
+```
+
+### 安装环境
+
+```bash
+pip install -r requirements.txt
+```
+
+也可以使用 Docker：
+
+```bash
+docker build -t houyi -f docker/Dockerfile .
+```
+
+### 准备模型权重
+
+模型权重不上传到 GitHub。运行前需要准备 AlphaFold、RFdiffusion、ProteinMPNN 和 ESM-2 等模型权重，并按照项目配置指定权重路径。
+
+运行结果、缓存文件和大型权重文件不会提交到 GitHub。
+
+### 查看运行参数
+
+```bash
+python run_houyi.py --help
+```
+
+`main` 是稳定版本，`sync-e2e-20261009` 是开发测试版本。
