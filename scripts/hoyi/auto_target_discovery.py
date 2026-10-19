@@ -105,7 +105,7 @@ def _curl_json(url, retries=3):
     return None
 
 
-def search_reviewed_proteins(organism, size=500, max_pages=20):
+def search_reviewed_proteins(organism, size=500, max_pages=200):
     """分页检索 UniProt reviewed 蛋白，并确认结果完整。"""
     if not 1 <= size <= 500:
         raise ValueError("Invalid UniProt page size")
@@ -130,12 +130,25 @@ def search_reviewed_proteins(organism, size=500, max_pages=20):
     try:
         with requests.Session() as session:
             while url is not None and pages < max_pages:
-                response = session.get(
-                    url,
-                    params=params,
-                    timeout=30,
-                )
-                response.raise_for_status()
+                response = None
+                last_exc = None
+                for attempt in range(4):
+                    try:
+                        response = session.get(
+                            url,
+                            params=params,
+                            timeout=60,
+                        )
+                        response.raise_for_status()
+                        break
+                    except requests.RequestException as exc:
+                        last_exc = exc
+                        response = None
+                        time.sleep(2 * (attempt + 1))
+                if response is None:
+                    raise RuntimeError(
+                        f"UNIPROT_REQUEST_FAILED: {last_exc}"
+                    )
                 data = response.json()
 
                 if not isinstance(data, dict):
