@@ -82,7 +82,27 @@ def run(
         )
 
     if not targets:
-        log().warning("  无可用靶点（自动检索未命中且无预置库）")
+        if dry_run:
+            log().warning("  [dry-run] 无可用靶点（预览模式，正常）")
+        elif targets_filter:
+            msg = (
+                "环1 无可用靶点：--targets 指定的靶点在检索结果中未匹配: "
+                + str(targets_filter)
+            )
+            log().error(f"  {msg}")
+            raise RuntimeError(msg)
+        else:
+            msg = (
+                f"环1 无可用靶点：自动检索 0 命中且无预置库。"
+                f"最常见原因：菌名不是 UniProt 标准物种名"
+                f"（致病型/血清型/中文/缩写均查不到），"
+                f'当前 organism="{organism}"。'
+                f"请改用标准拉丁学名重跑"
+                f"（例：Adherent-invasive E. coli -> Escherichia coli），"
+                f'或先用 UniProt 验证: organism_name:"<菌名>" AND reviewed:true'
+            )
+            log().error(f"  {msg}")
+            raise RuntimeError(msg)
 
     for t in targets:
         info = targets_meta[t]
