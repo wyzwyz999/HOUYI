@@ -111,6 +111,12 @@ def main():
         help="Run fast production preflight without heavy computation",
     )
 
+    parser.add_argument(
+        "--allow-unreviewed",
+        action="store_true",
+        help="无 reviewed 收录时回落到 TrEMBL 自动注释（标注 provenance=TrEMBL）",
+    )
+
     args = parser.parse_args()
     cfg = Config()
 
@@ -142,6 +148,7 @@ def main():
         af2_recycles=6,
 
         force_de_novo=True,
+        allow_unreviewed=args.allow_unreviewed,
     )
 
     print("\n===== HOUYI FINAL SUMMARY =====")

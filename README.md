@@ -61,10 +61,28 @@ python pipeline.py --organism "Staphylococcus aureus" --dry-run
 
 ## 核心特性
 
-- **任意细菌兜底**：无预置库的细菌自动经 UniProt 检索 reviewed 蛋白 → 强信号关键词分类 → 排除转录调控因子 → 产出候选靶点（`auto_target_discovery.py`）
+- **任意细菌兜底**：无预置库的细菌自动经 UniProt 检索 reviewed 蛋白 → 强信号关键词分类 + 豁免表（毒力蛋白酶/分选酶等）→ 排除管家酶/转录调控因子 → 产出候选靶点，再交选择器挑 payload 靶点（`auto_target_discovery.py`）
 - **执行后端抽象**：`wsl`/`container`/`native` 三种运行模式一键切换（`HOUYI_RUN_MODE`），脱离单一开发机
 - **真断点续跑**：每环产物独立落盘，失败可续
 - **重试机制**：Chai-1 预测带重试，对抗瞬时 CUDA OOM
+
+---
+
+## 环1 靶点检索说明
+
+环1 自动检索默认只取 UniProt **reviewed（Swiss-Prot 人工审阅）** 条目。以下三种情况都会得到 0 靶点，日志会分别给出对应处置建议，不再统一报"菌名错误"：
+
+| 情况 | 典型例子 | 处置 |
+|------|----------|------|
+| 菌名不是 UniProt 的 organism_name | `Adherent-invasive Escherichia coli`、`Shiga toxin-producing E.coli` | 换种名，如 `Escherichia coli` |
+| 名字合法，但 Swiss-Prot 未收录该物种 | `Fusobacterium necrophorum`（2484 条记录全为 TrEMBL） | `--allow-unreviewed`，或 `--targets` 指定靶点，或建预置库 |
+| 命中，但被关键词规则过滤 | `Bilophila wadsworthia`（13 条全为代谢酶） | `--targets` 手动指定靶点 |
+
+沙门菌注意：UniProt 用血清型名（`Salmonella typhimurium` 有 1980 条 reviewed），
+`Salmonella enterica` 只有 3 条。
+
+`--allow-unreviewed` 仅在 reviewed 为 0 时回落到 TrEMBL（自动注释），且最多取 20000 条；
+命中结果会在每个靶点上标注 `provenance=TrEMBL`，`pipeline_state.json` 的环1记录也会带该标记。
 
 ---
 

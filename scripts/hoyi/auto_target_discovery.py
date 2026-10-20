@@ -53,10 +53,30 @@ EXCLUDE_KEYWORDS = [
     "mutase", "racemase", "transaminase", "synthetase", "lyase", "dehydratase",
     "dna repair", "metabolism", "metabolic", "biosynthesis of amino",
     # 转录调控蛋白（胞内，表面不可及，非理想抗原靶点）
+    # 注意：不要在这里放 "response regulator" —— 它是
+    # KEYWORD_RULES 里的正向概念（群体感应/调控）。此前两处冲突，
+    # 而排除词先判定，导致该类靶点永远无法被选中。
     "transcriptional regulator", "transcriptional repressor",
-    "transcriptional activator", "response regulator",
+    "transcriptional activator",
     "global transcriptional regulator", "phosphodiesterase",
     # 耐药酶应通过"耐药"类别正常分类，但若被当作一般酶需排除
+]
+
+# 排除词豁免表（先于 EXCLUDE_KEYWORDS 判定）。
+# 这些条目的注释里通常也含 "protease"/"kinase" 等通用管家酶词，
+# 但它们本身是明确的毒力/可成药靶点，不应被通用排除词误伤
+# （例：牙龈卟啉单胞菌的 gingipain 就曾因 "protease" 被整条丢弃）。
+FORCE_INCLUDE_RULES = [
+    (["gingipain", "iga protease", "immunoglobulin a protease",
+      "c5a peptidase"], "毒力因子"),
+    (["collagenase", "hyaluronidase", "neuraminidase",
+      "streptokinase", "staphylokinase", "coagulase", "elastase"], "毒力因子"),
+    (["sortase", "autolysin", "n-acetylmuramoyl-l-alanine amidase"],
+     "细胞壁/膜合成"),
+    # 只放"传感器组氨酸激酶"这一具体短语：泛化的 "histidine kinase"
+    # 会把管家型激酶一起拉进来，反而稀释候选质量。
+    (["sensor histidine kinase"], "群体感应/调控"),
+    (["response regulator", "two-component system"], "群体感应/调控"),
 ]
 
 CATEGORY_PREFIX = {
@@ -105,14 +125,23 @@ def _curl_json(url, retries=3):
     return None
 
 
-def search_reviewed_proteins(organism, size=500, max_pages=200):
-    """分页检索 UniProt reviewed 蛋白，并确认结果完整。"""
+def search_proteins(organism, reviewed_only=True, size=500,
+                    max_pages=200, max_records=None):
+    """分页检索 UniProt 蛋白（默认只要 reviewed），并确认结果完整。
+
+    reviewed_only=False 时检索该 organism_name 的全部条目（含 TrEMBL）。
+    max_records 用于给 TrEMBL 兜底设上限：一旦达到上限就停止翻页，
+    返回部分结果（调用方会收到 truncated 日志），避免为冷门/高注释物种
+    一次拉取十万级记录。
+    """
     if not 1 <= size <= 500:
         raise ValueError("Invalid UniProt page size")
     if max_pages < 1:
         raise ValueError("Invalid UniProt max_pages")
 
-    q = f'organism_name:"{organism}" AND reviewed:true'
+    q = f'organism_name:"{organism}"'
+    if reviewed_only:
+        q += " AND reviewed:true"
     base_url = "https://rest.uniprot.org/uniprotkb/search"
     params = {
         "query": q,
@@ -126,6 +155,7 @@ def search_reviewed_proteins(organism, size=500, max_pages=200):
     total = None
     url = base_url
     pages = 0
+    truncated = False
 
     try:
         with requests.Session() as session:
@@ -174,6 +204,13 @@ def search_reviewed_proteins(organism, size=500, max_pages=200):
                         all_results.append(record)
 
                 pages += 1
+                if max_records is not None and len(all_results) >= max_records:
+                    truncated = True
+                    log().warning(
+                        f"  [自动检索] 已达 TrEMBL 上限 {max_records} 条，"
+                        f"停止翻页（reported_total={total}），仅用已取回部分筛选"
+                    )
+                    break
                 url = response.links.get("next", {}).get("url")
                 params = None
 
@@ -182,16 +219,45 @@ def search_reviewed_proteins(organism, size=500, max_pages=200):
     except ValueError as exc:
         raise RuntimeError(f"UNIPROT_INVALID_RESPONSE: {exc}") from exc
 
-    if url is not None:
+    if url is not None and not truncated:
         raise RuntimeError("UNIPROT_COMPLETENESS_UNCONFIRMED")
 
-    if total is None or len(all_results) != total:
+    if not truncated and (total is None or len(all_results) != total):
         raise RuntimeError(
             f"UNIPROT_COMPLETENESS_UNCONFIRMED: "
             f"retrieved={len(all_results)} reported_total={total}"
         )
 
     return all_results
+
+
+def search_reviewed_proteins(organism, size=500, max_pages=200):
+    """兼容旧调用：只检索 reviewed 蛋白。"""
+    return search_proteins(
+        organism,
+        reviewed_only=True,
+        size=size,
+        max_pages=max_pages,
+    )
+
+
+def count_proteins(organism, reviewed_only=False, timeout=20):
+    """轻量计数（只读 x-total-results），用于失败归因，失败返回 None。"""
+    q = f'organism_name:"{organism}"'
+    if reviewed_only:
+        q += " AND reviewed:true"
+    try:
+        r = requests.get(
+            "https://rest.uniprot.org/uniprotkb/search",
+            params={"query": q, "size": 1, "format": "list"},
+            timeout=timeout,
+        )
+        if r.status_code != 200:
+            return None
+        header = r.headers.get("x-total-results")
+        return int(header) if header is not None else None
+    except Exception:
+        return None
 
 
 
@@ -222,17 +288,44 @@ def _extract_info(result):
     }
 
 
-def _classify(info):
-    text = " ".join([info["name"], " ".join(info["genes"]),
-                     " ".join(info["function"])]).lower()
+def _candidate_text(info):
+    return " ".join([
+        info["name"],
+        " ".join(info["genes"]),
+        " ".join(info["function"]),
+    ]).lower()
+
+
+def _classify_verbose(info):
+    """返回 (category, keyword, reason)。
+
+    命中时 reason 为 None；未命中时 reason 为 ("exclude", 命中的排除词)
+    或 ("no_keyword", None)。判定顺序：豁免表 -> 排除词 -> 强信号关键词，
+    保证 "sensor histidine kinase" / "response regulator" 这类
+    既是正向概念、又含通用管家酶词的条目不被误杀。
+    """
+    text = _candidate_text(info)
+
+    for keywords, category in FORCE_INCLUDE_RULES:
+        for kw in keywords:
+            if kw.lower() in text:
+                return category, kw, None
+
     for kw in EXCLUDE_KEYWORDS:
         if kw.lower() in text:
-            return None, None
+            return None, None, ("exclude", kw)
+
     for keywords, category in KEYWORD_RULES:
         for kw in keywords:
             if kw.lower() in text:
-                return category, kw
-    return None, None
+                return category, kw, None
+
+    return None, None, ("no_keyword", None)
+
+
+def _classify(info):
+    category, kw, _ = _classify_verbose(info)
+    return category, kw
 
 
 def _get_sequence(accession):
@@ -241,27 +334,118 @@ def _get_sequence(accession):
     return (data or {}).get("sequence", {}).get("value", "")
 
 
-def auto_discover_targets(organism, max_targets=15):
-    """自动检索 + 筛选靶点，返回靶点 dict（target_id -> 靶点元信息）。"""
+UNREVIEWED_MAX_RECORDS = 20000
+
+
+def auto_discover_targets(organism, max_targets=15, allow_unreviewed=False,
+                          diagnostics=None):
+    """自动检索 + 筛选靶点，返回靶点 dict（target_id -> 靶点元信息）。
+
+    allow_unreviewed=True 时，若 reviewed 为 0 条，回落到 TrEMBL 全部条目
+    （上限 UNREVIEWED_MAX_RECORDS 条），并在每个靶点标注 provenance。
+
+    diagnostics 为可选 dict，会被填入检索/筛选漏斗的中间计数，
+    供 ring1 在 0 靶点时给出准确归因（区分"没检索到"与"检索到但被筛掉"）。
+    """
+    diag = diagnostics if diagnostics is not None else {}
+    diag.update({
+        "organism": organism,
+        "reviewed_hits": 0,
+        "unreviewed_used": False,
+        "unreviewed_hits": None,
+        "all_hits": None,
+        "classified": 0,
+        "excluded_count": 0,
+        "no_keyword_count": 0,
+        "length_rejected": 0,
+        "bucket_counts": {},
+        "candidates": 0,
+        "exclude_examples": [],
+        "stage": None,
+        "provenance": "reviewed",
+    })
+
     log().info(f"  [自动检索] 检索 {organism} 的 reviewed 蛋白...")
-    results = search_reviewed_proteins(organism)
-    log().info(f"  [自动检索] 命中 {len(results)} 条 reviewed 蛋白")
+    results = search_proteins(organism, reviewed_only=True)
+    n_reviewed = len(results)
+    diag["reviewed_hits"] = n_reviewed
+    log().info(f"  [自动检索] 命中 {n_reviewed} 条 reviewed 蛋白")
+
+    provenance = "reviewed"
+    if n_reviewed == 0 and allow_unreviewed:
+        log().warning(
+            "  [自动检索] reviewed 为 0，按 --allow-unreviewed 回落到 "
+            "TrEMBL（自动注释，可靠性低于 Swiss-Prot）"
+        )
+        results = search_proteins(
+            organism,
+            reviewed_only=False,
+            max_records=UNREVIEWED_MAX_RECORDS,
+        )
+        provenance = "TrEMBL"
+        diag["unreviewed_used"] = True
+        diag["unreviewed_hits"] = len(results)
+        diag["provenance"] = provenance
+        log().info(
+            f"  [自动检索] TrEMBL 命中 {len(results)} 条（已标注 "
+            f"provenance=TrEMBL）"
+        )
+
+    if not results:
+        diag["stage"] = "no_hits"
+        diag["all_hits"] = count_proteins(organism, reviewed_only=False)
+        log().warning(
+            f"  [自动检索] 0 条可用蛋白（不限 reviewed 的库内总数: "
+            f"{diag['all_hits']}）"
+        )
+        return {}
 
     # 第一遍：分类收集所有候选（按类别分桶，去重）
     buckets = {}
     seen = set()
+    n_excluded = 0
+    n_no_keyword = 0
+    n_length = 0
+    exclude_examples = []
     for r in results:
         info = _extract_info(r)
-        category, kw = _classify(info)
+        category, kw, reason = _classify_verbose(info)
         if category is None:
+            kind, word = reason
+            if kind == "exclude":
+                n_excluded += 1
+                if len(exclude_examples) < 5:
+                    exclude_examples.append({
+                        "accession": info["accession"],
+                        "gene": info["genes"][0] if info["genes"] else "",
+                        "protein": info["name"],
+                        "word": word,
+                    })
+            else:
+                n_no_keyword += 1
             continue
         if info["length"] < 30 or info["length"] > 1200:
+            n_length += 1
             continue
         gene_key = (info["genes"][0] if info["genes"] else info["accession"]).lower()
         if gene_key in seen:
             continue
         seen.add(gene_key)
         buckets.setdefault(category, []).append((info, kw))
+
+    diag.update({
+        "classified": sum(len(v) for v in buckets.values()),
+        "excluded_count": n_excluded,
+        "no_keyword_count": n_no_keyword,
+        "length_rejected": n_length,
+        "bucket_counts": {k: len(v) for k, v in buckets.items()},
+        "exclude_examples": exclude_examples,
+    })
+    log().info(
+        f"  [自动检索] 关键词筛选: 通过 {diag['classified']} 条 / "
+        f"排除词命中 {n_excluded} 条 / 无机制关键词 {n_no_keyword} 条 / "
+        f"长度不符 {n_length} 条"
+    )
 
     # 第二遍：按类别优先级 + 每类上限选取，避免单一类别垄断
     targets = {}
@@ -285,11 +469,15 @@ def auto_discover_targets(organism, max_targets=15):
                 "function": " ".join(info["function"])[:300],
                 "pdb": None,
                 "auto_detected": True,
+                "provenance": provenance,
                 "detect_keyword": kw,
             }
             category_counts[category] = category_counts.get(category, 0) + 1
         if len(targets) >= max_targets:
             break
+
+    diag["candidates"] = len(targets)
+    diag["stage"] = "ok" if targets else "classified_zero"
 
     log().info(f"  [自动检索] 筛选出 {len(targets)} 个候选靶点")
     for tid, v in targets.items():

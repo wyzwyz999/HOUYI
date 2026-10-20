@@ -37,7 +37,8 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
                  af2_seeds=3,
                  af2_recycles=6,
                  force_de_novo=False,
-    auto_top_n_targets=1):
+    auto_top_n_targets=1,
+    allow_unreviewed=False):
     """执行十环管线，返回状态数据。
 
     环1 靶点分析 → 环2 结构预测 → 环3 Binder 设计 → 环4 评分排序
@@ -58,6 +59,7 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
         num_designs: 环 3 每靶点 RFdiffusion 骨架数
         mpnn_samples: 环 4 每骨架、每采样温度的 ProteinMPNN 序列数
         af2_validate: 是否在环4后进行 AF2-Multimer 验证
+        allow_unreviewed: reviewed 为 0 时是否回落到 TrEMBL（默认关闭）
         af2_top_k: 每靶点进入 AF2 的候选数
         af2_models: AF2 model 数
         af2_seeds: AF2 seed 数
@@ -108,6 +110,7 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
                 state,
                 dry_run=dry_run,
                 auto_top_n_targets=auto_top_n_targets,
+                allow_unreviewed=allow_unreviewed,
             )
             targets = state.get_artifact(1, "targets", [])
             emit(1, "done", f"完成：推导出 {len(targets)} 个靶点")

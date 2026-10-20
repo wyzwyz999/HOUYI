@@ -64,6 +64,12 @@ def main():
                     help="AF2 recycle 数")
 
     ap.add_argument("--verbose", action="store_true", help="详细日志")
+    ap.add_argument(
+        "--allow-unreviewed",
+        action="store_true",
+        help="无 reviewed（Swiss-Prot）收录时回落到 TrEMBL 自动注释建靶点"
+        "（结果会标注 provenance=TrEMBL，可靠性下降，默认关闭）",
+    )
     args = ap.parse_args()
 
     # 载入 MIC 数据（若指定）
@@ -127,6 +133,7 @@ def main():
             af2_models=args.af2_models,
             af2_seeds=args.af2_seeds,
             af2_recycles=args.af2_recycles,
+            allow_unreviewed=args.allow_unreviewed,
         )
     except Exception as e:
         try:
