@@ -21,6 +21,48 @@ from .auto_target_discovery import (
 
 
 # ---------------------------------------------------------------------
+# 质量分层（2026-10-24）
+#
+# 端到端不能因为"表面证据门控"把候选清零（那会让环8/9/10 全空），
+# 所以把候选分成四档，按档位优先排序，而不是直接丢弃：
+#   curated        人工 KB / 人工补录，最可信
+#   reviewed       Swiss-Prot + 结构化表面证据（定位/关键词）
+#   reviewed_weak  Swiss-Prot 但只有文本证据（如仅标注 Secreted）
+#   exploratory    TrEMBL 降级候选，有结构化表面证据
+#   fallback       TrEMBL 降级 + 仅文本证据 / 命中管家酶兼职蛋白
+# ---------------------------------------------------------------------
+
+TIER_RANK = {
+    "curated": 0,
+    "reviewed": 1,
+    "reviewed_weak": 2,
+    "exploratory": 3,
+    "fallback": 4,
+}
+
+# 管家酶 / 兼职(moonlighting)蛋白：TrEMBL 里常被标成 cell surface，
+# 但它们不是真正的表面受体，不能当尾纤维靶点。
+MOONLIGHTING_KEYWORDS = [
+    "enolase", "groel", "groes", "chaperonin", "dnak", "hsp70",
+    "gapdh", "glyceraldehyde-3-phosphate dehydrogenase",
+    "elongation factor tu", "ef-tu", "ef-tu",
+    "aldolase", "fructose-bisphosphate",
+    "pyruvate dehydrogenase", "aldehyde-alcohol dehydrogenase", "adhe",
+    "superoxide dismutase", "catalase", "glutamine synthetase",
+    "trigger factor", "peptidyl-prolyl", "atp synthase",
+    "triosephosphate isomerase", "phosphoglycerate kinase",
+    "transketolase", "aconitase", "citrate synthase",
+    "glutamate dehydrogenase", "malate dehydrogenase",
+]
+
+
+def _is_moonlighting(name, gene):
+    text = f"{name} {gene}".lower()
+    return any(kw in text for kw in MOONLIGHTING_KEYWORDS)
+
+
+
+# ---------------------------------------------------------------------
 # Cold-start receptor rules
 # 越靠前代表越强的“可被尾纤维接触”证据。
 # ---------------------------------------------------------------------
@@ -187,11 +229,14 @@ def _check_surface_localization(accession):
 
 
 
-def _search_receptor_records(organism, size=500, max_pages=20):
-    """检索 reviewed 蛋白，额外取回亚细胞定位与关键词字段（结构化证据通道）。"""
+def _search_receptor_records(organism, size=500, max_pages=20,
+                             reviewed_only=True):
+    """检索 UniProt 蛋白，额外取回亚细胞定位与关键词字段（结构化证据通道）。"""
     import requests
 
-    q = f'organism_name:"{organism}" AND reviewed:true'
+    q = f'organism_name:"{organism}"'
+    if reviewed_only:
+        q += ' AND reviewed:true'
     url = "https://rest.uniprot.org/uniprotkb/search"
     params = {
         "query": q,
@@ -279,7 +324,8 @@ def _structured_surface_evidence(record):
     return None
 
 
-def auto_discover_fiber_targets(organism, max_targets=8):
+def auto_discover_fiber_targets(organism, max_targets=8, allow_unreviewed=False,
+                                force_unreviewed=False):
     """Cold-start 自动发现尾纤维表面受体候选。
 
     双通道证据，均要求明确的表面可及性证据：
@@ -287,14 +333,24 @@ def auto_discover_fiber_targets(organism, max_targets=8):
       B) UniProt 结构化注释命中（亚细胞定位强阳性 / 细胞壁-外膜关键词）。
     未经证据支持的评分维度统一保守为 0。
     """
-    log().info(
-        f"  [Ring7 cold-start] 检索 {organism} 的 reviewed 表面受体候选..."
-    )
+    if force_unreviewed:
+        provenance = "TrEMBL"
+        log().info(
+            f"  [Ring7 cold-start] 检索 {organism} 的 TrEMBL 表面受体候选"
+            "（跳过 reviewed）..."
+        )
+        results = _search_receptor_records(
+            organism, size=500, max_pages=8, reviewed_only=False
+        )
+    else:
+        provenance = "reviewed"
+        log().info(
+            f"  [Ring7 cold-start] 检索 {organism} 的 reviewed 表面受体候选..."
+        )
+        results = _search_receptor_records(organism, size=500)
 
-    results = _search_receptor_records(organism, size=500)
-
     log().info(
-        f"  [Ring7 cold-start] UniProt reviewed 命中 {len(results)} 条蛋白"
+        f"  [Ring7 cold-start] UniProt {provenance} 命中 {len(results)} 条蛋白"
     )
 
     raw_candidates = []
@@ -312,14 +368,14 @@ def auto_discover_fiber_targets(organism, max_targets=8):
         if match is None and struct_ev is None:
             continue
 
-        if struct_ev is None:
-            # 文本命中但结构化字段无表面证据：
-            # 与旧版完整记录门控的数据源一致，结论相同 -> 丢弃
+        weak_only = struct_ev is None
+        if weak_only:
+            # 只命中文本、没有结构化表面证据：不再直接丢弃，
+            # 降级为弱候选（tier 更低、得分打折），保证端到端不断链。
             log().info(
-                f"    [Ring7 gate] DROP {info['accession']}: "
-                f"{info['name']} | reason=no_surface_evidence"
+                f"    [Ring7 gate] WEAK {info['accession']}: "
+                f"{info['name']} | reason=text_only_evidence"
             )
-            continue
 
         if match is not None:
             keyword, exposure, specificity = match
@@ -335,17 +391,23 @@ def auto_discover_fiber_targets(organism, max_targets=8):
 
         # 表面可及性硬门控：基于检索返回的亚细胞定位/关键词结构化字段
         # （与旧版完整记录门控同一 UniProt 数据源，省去逐条二次请求）
-        locations = struct_ev[3]
+        locations = struct_ev[3] if struct_ev else []
 
         seen.add(dedup_key)
 
         info["_surface_locations"] = locations
-        info["_localization_reason"] = struct_ev[0]
+        info["_localization_reason"] = (
+            struct_ev[0] if struct_ev else "text_only_evidence"
+        )
 
         preliminary = (
             0.30 * exposure +
             0.20 * specificity
         )
+        if weak_only:
+            preliminary *= 0.6
+        if _is_moonlighting(info["name"], gene):
+            preliminary *= 0.5
 
         raw_candidates.append(
             (
@@ -354,6 +416,7 @@ def auto_discover_fiber_targets(organism, max_targets=8):
                 keyword,
                 exposure,
                 specificity,
+                weak_only,
             )
         )
 
@@ -362,7 +425,7 @@ def auto_discover_fiber_targets(organism, max_targets=8):
 
     candidates = {}
 
-    for _, info, keyword, exposure, specificity in raw_candidates:
+    for _, info, keyword, exposure, specificity, weak_only in raw_candidates:
         gene = info["genes"][0] if info["genes"] else ""
         accession = info["accession"]
 
@@ -376,6 +439,12 @@ def auto_discover_fiber_targets(organism, max_targets=8):
         if accession:
             sequence = _get_sequence(accession)
             time.sleep(0.25)
+
+        moon = _is_moonlighting(info["name"], gene)
+        if provenance == "TrEMBL":
+            tier = "fallback" if (weak_only or moon) else "exploratory"
+        else:
+            tier = "reviewed_weak" if (weak_only or moon) else "reviewed"
 
         candidates[target_id] = {
             "protein": info["name"],
@@ -407,12 +476,17 @@ def auto_discover_fiber_targets(organism, max_targets=8):
             "mechanism_class": "tail_fiber_redirect",
             "auto_detected": True,
             "evidence_keyword": keyword,
-            "evidence_source": "UniProt reviewed annotation + subcellular localization",
+            "provenance": provenance,
+            "quality_tier": tier,
+            "moonlighting": moon,
+            "evidence_source": (
+                f"UniProt {provenance} annotation + subcellular localization"
+            ),
             "surface_locations": info.get("_surface_locations", []),
             "localization_reason": info.get("_localization_reason", ""),
             "note": (
                 "Ring7 cold-start 自动发现。"
-                "当前仅依据 reviewed UniProt 的表面/外膜文本证据；"
+                f"当前依据 {provenance} UniProt 的表面/外膜证据；"
                 "尚未进行受体结合位点和实验验证。"
             ),
         }
@@ -427,10 +501,24 @@ def auto_discover_fiber_targets(organism, max_targets=8):
             f"[{info['evidence_keyword']}]"
         )
 
+    # reviewed 无表面受体候选时，--allow-unreviewed 回落到 TrEMBL 重试
+    if not candidates and allow_unreviewed and provenance != "TrEMBL":
+        log().warning(
+            "  [Ring7 cold-start] reviewed 无表面受体候选，"
+            "按 --allow-unreviewed 回落到 TrEMBL 重试"
+        )
+        return auto_discover_fiber_targets(
+            organism,
+            max_targets=max_targets,
+            allow_unreviewed=True,
+            force_unreviewed=True,
+        )
+
     return candidates
 
 
-def run(cfg, fiber_targets=None, state=None, dry_run=False):
+def run(cfg, fiber_targets=None, state=None, dry_run=False,
+        allow_unreviewed=False):
     """环 7：尾纤维靶点分析。
 
     Args:
@@ -536,6 +624,7 @@ def run(cfg, fiber_targets=None, state=None, dry_run=False):
                     candidates = auto_discover_fiber_targets(
                         organism,
                         max_targets=8,
+                        allow_unreviewed=allow_unreviewed,
                     )
 
     if not candidates:
@@ -583,13 +672,21 @@ def run(cfg, fiber_targets=None, state=None, dry_run=False):
             "auto_detected": info.get("auto_detected", False),
             "evidence_keyword": info.get("evidence_keyword"),
             "evidence_source": info.get("evidence_source"),
+            "quality_tier": info.get(
+                "quality_tier",
+                "reviewed" if info.get("auto_detected", False) else "curated",
+            ),
+            "provenance": info.get("provenance"),
         }
 
         results.append(rec)
 
+    # 先按质量档，再按综合分：高质量候选永远排在降级候选之前
     results.sort(
-        key=lambda x: x["composite_score"],
-        reverse=True,
+        key=lambda x: (
+            TIER_RANK.get(x.get("quality_tier", "fallback"), 9),
+            -x["composite_score"],
+        )
     )
 
     for i, r in enumerate(results):

@@ -4,16 +4,43 @@ set -euo pipefail
 cd /root/autodl-tmp/HOUYI_git
 source scripts/houyi_env.sh
 
+# 让脚本在非交互 shell（cron / 批量 / ssh 直接调用）下也能找到 python，
+# 否则 `python: command not found` 会在 GPU 检查那一步就退出。
+PYTHON_BIN="${HOUYI_PYTHON:-/root/miniconda3/bin/python}"
+export PATH="/root/miniconda3/bin:$PATH"
+
 if [ $# -lt 1 ]; then
-    echo '用法: bash scripts/run_species.sh "Pseudomonas aeruginosa"'
+    echo '用法: bash scripts/run_species.sh "Pseudomonas aeruginosa" [额外参数，原样透传给 pipeline.py，如 --allow-unreviewed / --targets sodA]'
     exit 1
 fi
 
 ORGANISM="$1"
+shift
+
+# ---------------------------------------------------------------------------
+# 质量策略（2026-10-24）：reviewed 优先，失败才降级
+#
+# --allow-unreviewed 的语义是"先查 reviewed（Swiss-Prot 人工审阅），只有查不到
+# 可用靶点时才回落 TrEMBL"，因此默认开启不会降低正常物种的结果质量：
+#   - reviewed 能出靶点 -> 全程不碰 TrEMBL，provenance=reviewed
+#   - reviewed 0 条 / 有记录但全被筛掉 -> 自动回落 TrEMBL，provenance=TrEMBL
+#
+# 需要严格模式（任何情况都不降级）时：
+#   HOUYI_STRICT_REVIEWED=1 bash scripts/run_species.sh "菌名"
+# ---------------------------------------------------------------------------
+AUTO_REVIEW_FALLBACK=()
+if [ "${HOUYI_STRICT_REVIEWED:-0}" != "1" ]; then
+    AUTO_REVIEW_FALLBACK=(--allow-unreviewed)
+fi
 
 echo "=========================================="
 echo "HOUYI 一键泛化设计"
 echo "Organism: $ORGANISM"
+if [ "${HOUYI_STRICT_REVIEWED:-0}" = "1" ]; then
+    echo "质量策略: 严格 reviewed（不降级）"
+else
+    echo "质量策略: reviewed 优先，检索不到靶点时自动回落 TrEMBL"
+fi
 echo "=========================================="
 
 echo
@@ -105,7 +132,7 @@ echo
 echo "[5/5] 启动完整 HOUYI Ring1 -> Ring10"
 echo
 
-python scripts/pipeline.py \
+"$PYTHON_BIN" scripts/pipeline.py \
     --organism "$ORGANISM" \
     --start 1 \
     --stop 10 \
@@ -114,7 +141,9 @@ python scripts/pipeline.py \
     --af2-models 5 \
     --af2-seeds 3 \
     --af2-recycles 6 \
-    --verbose
+    --verbose \
+    "${AUTO_REVIEW_FALLBACK[@]}" \
+    "$@"
 
 echo
 echo "=========================================="

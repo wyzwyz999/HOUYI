@@ -117,6 +117,9 @@ def run(cfg, fiber_binders=None, state=None):
             "linker": PVC13_LINKER,
             "reprogrammed_sequence": full_seq,
             "reprogrammed_length": len(full_seq),
+            # 质量分层透传
+            "quality_tier": fb.get("quality_tier"),
+            "provenance": fb.get("provenance"),
             "note": (
                 "已按 pvc13_N-linker-binder-linker-pvc13_C "
                 "三段式重编程"

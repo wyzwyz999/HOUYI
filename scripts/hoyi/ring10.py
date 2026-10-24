@@ -124,6 +124,12 @@ def run(cfg, payloads=None, reprogrammed_fibers=None, state=None):
                             "同时经 Pdp1_NTD 装载杀菌载荷。载荷 + 尾纤维重定向 = PVC 完整重设计。"
                         ),
                         "complete": True,
+                        # 质量分层：curated/reviewed 才算高置信；
+                        # exploratory/fallback 是降级候选，仍产出但需人工复核
+                        "quality_tier": f.get("quality_tier") or "unknown",
+                        "complete_strict": (
+                            f.get("quality_tier") or "unknown"
+                        ) in ("curated", "reviewed"),
                     }
                     nanosyringes.append(syringe)
 
@@ -161,6 +167,8 @@ def run(cfg, payloads=None, reprogrammed_fibers=None, state=None):
                     },
                     "assembly_note": "已有payload，但该菌当前无可执行READY尾纤维。",
                     "complete": False,
+                    "quality_tier": None,
+                    "complete_strict": False,
                 }
                 nanosyringes.append(syringe)
     else:

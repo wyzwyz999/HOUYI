@@ -115,6 +115,9 @@ def run(cfg, fiber_targets=None, state=None, num_designs=32, mpnn_samples=3, dry
             "priority_rank": ft.get("priority_rank"),
             "composite_score": ft.get("composite_score"),
             "organism": ft.get("organism", ""),
+            # 质量分层透传（curated / reviewed / reviewed_weak / exploratory / fallback）
+            "quality_tier": ft.get("quality_tier"),
+            "provenance": ft.get("provenance"),
         }
 
         route_results = []

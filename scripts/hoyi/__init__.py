@@ -12,8 +12,10 @@
   → 环7 尾纤维靶点分析 → 环8 尾纤维 binder/天然结构域筛选
   → 环9 重编程 pvc13 → 环10 纳米注射器总装
 """
+import os
+
 from .config import Config
-from .utils import State, load_json, log, CommandError, emit_event
+from .utils import State, load_json, save_json, log, CommandError, emit_event
 from . import ring1, ring2, ring3, ring4, ring5, ring6, ring7, ring8, ring9, ring10
 
 __all__ = ["Config", "State", "run_pipeline"]
@@ -38,7 +40,8 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
                  af2_recycles=6,
                  force_de_novo=False,
     auto_top_n_targets=1,
-    allow_unreviewed=False):
+    allow_unreviewed=False,
+    resilient=True):
     """执行十环管线，返回状态数据。
 
     环1 靶点分析 → 环2 结构预测 → 环3 Binder 设计 → 环4 评分排序
@@ -73,6 +76,39 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
     # 检测 organism 变更并清理跨菌种残留（避免 KP 残留污染金葡菌等）
     ensure_clean_organism(cfg, organism)
     state = State(cfg)
+
+    # -----------------------------------------------------------------
+    # 端到端容错（2026-10-24）
+    # 目标：输入菌名后 1-10 环一定跑到底，不因某一环失败而整体中止。
+    #   - 失败环节标记 ERROR，并记入 run_summary.json
+    #   - 依赖该环节的下游标 SKIPPED_UPSTREAM（避免拿空产物去算垃圾）
+    #   - AF2(4.5) 失败只跳过验证，不阻断环5-10
+    #   - 需要旧行为（失败即停）：HOUYI_STRICT_PIPELINE=1 或 resilient=False
+    # -----------------------------------------------------------------
+    strict_pipeline = (
+        os.environ.get("HOUYI_STRICT_PIPELINE", "0") == "1"
+        or not resilient
+    )
+
+    def ring_status(n):
+        return ((state.data.get("rings", {}) or {}).get(str(n)) or {}).get("status")
+
+    def dep_failed(n, deps):
+        for d in deps:
+            if ring_status(d) in ("ERROR", "SKIPPED_UPSTREAM"):
+                state.mark_ring(n, "SKIPPED_UPSTREAM", f"上游环 {d} 未成功")
+                emit(n, "skipped", f"跳过：上游环 {d} 未成功")
+                log().warning(f"  环 {n} 跳过：上游环 {d} 未成功")
+                return True
+        return False
+
+    def artifact_of(current, ring, loader):
+        """取本次产物；若该环本次失败/被阻塞，返回空，禁止拿上一轮旧文件冒充。"""
+        if ring_status(ring) in ("ERROR", "SKIPPED_UPSTREAM"):
+            return []
+        if current is not None:
+            return current
+        return loader() or []
 
     # 本次run_pipeline内的显式内存产物。
     # 同次运行优先使用这些对象，只有断点续跑时才回退读取JSON。
@@ -118,7 +154,7 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
             log().error(f"环 1 失败: {e}")
             state.mark_ring(1, "ERROR", str(e))
             emit(1, "error", f"环 1 失败: {e}")
-            if not dry_run:
+            if not dry_run and strict_pipeline:
                 raise
     else:
         targets = targets or state.get_artifact(1, "targets", [])
@@ -155,7 +191,7 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
     save_run_record(cfg, run_record)
 
     # ---- 环 2：结构预测 ----
-    if should_run(2):
+    if should_run(2) and not dep_failed(2, (1,)):
         emit(2, "running", "环 2：结构预测")
         try:
             ring2.run(cfg, targets, state, dry_run=dry_run)
@@ -164,11 +200,11 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
             log().error(f"环 2 失败: {e}")
             state.mark_ring(2, "ERROR", str(e))
             emit(2, "error", f"环 2 失败: {e}")
-            if not dry_run:
+            if not dry_run and strict_pipeline:
                 raise
 
     # ---- 环 3：Binder 设计 ----
-    if should_run(3):
+    if should_run(3) and not dep_failed(3, (1, 2)):
         emit(3, "running", "环 3：Binder 设计")
         try:
             designed_current = ring3.run(
@@ -184,11 +220,11 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
             log().error(f"环 3 失败: {e}")
             state.mark_ring(3, "ERROR", str(e))
             emit(3, "error", f"环 3 失败: {e}")
-            if not dry_run:
+            if not dry_run and strict_pipeline:
                 raise
 
     # ---- 环 4：评分排序 ----
-    if should_run(4):
+    if should_run(4) and not dep_failed(4, (3,)):
         emit(4, "running", "环 4：评分排序")
         scored_current = []
         try:
@@ -207,7 +243,7 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
             log().error(f"环 4 失败: {e}")
             state.mark_ring(4, "ERROR", str(e))
             emit(4, "error", f"环 4 失败: {e}")
-            if not dry_run:
+            if not dry_run and strict_pipeline:
                 raise
 
 
@@ -218,106 +254,123 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
 
     # ---- 环 4.5：AF2-Multimer 验证 ----
     if af2_validate and (should_run(4) or should_run(5)):
-        log().info("环 4.5：AF2-Multimer 验证")
+        try:
+            log().info("环 4.5：AF2-Multimer 验证")
 
-        from pathlib import Path
-        from .af2_validator import AF2Validator
-        from .records import target_record_map
+            from pathlib import Path
+            from .af2_validator import AF2Validator
+            from .records import target_record_map
 
-        scored = (
-            scored_current
-            if should_run(4)
-            else load_json(cfg.ring4_out)
-        )
-        records = target_record_map(cfg)
+            scored = (
+                scored_current
+                if should_run(4)
+                else load_json(cfg.ring4_out)
+            )
+            records = target_record_map(cfg)
 
-        if not scored:
-            msg = f"AF2验证失败：未找到 Ring4 候选 {cfg.ring4_out}"
-            if dry_run:
-                log().warning(msg)
+            if not scored:
+                msg = f"AF2验证失败：未找到 Ring4 候选 {cfg.ring4_out}"
+                if dry_run:
+                    log().warning(msg)
+                else:
+                    raise FileNotFoundError(msg)
+
+            elif not records:
+                msg = "AF2验证失败：未找到 TargetRecord"
+                if dry_run:
+                    log().warning(msg)
+                else:
+                    raise FileNotFoundError(msg)
+
             else:
-                raise FileNotFoundError(msg)
+                validator = AF2Validator(cfg)
+                all_validated = []
 
-        elif not records:
-            msg = "AF2验证失败：未找到 TargetRecord"
-            if dry_run:
-                log().warning(msg)
-            else:
-                raise FileNotFoundError(msg)
+                for target in sorted({
+                    c.get("target") for c in scored
+                    if c.get("target")
+                }):
+                    rec = records.get(target)
+                    if not rec:
+                        raise ValueError(
+                            f"{target} 缺少 TargetRecord"
+                        )
 
-        else:
-            validator = AF2Validator(cfg)
-            all_validated = []
+                    pdb_path = rec.get("struct_path")
+                    chain = rec.get("target_chain")
 
-            for target in sorted({
-                c.get("target") for c in scored
-                if c.get("target")
-            }):
-                rec = records.get(target)
-                if not rec:
-                    raise ValueError(
-                        f"{target} 缺少 TargetRecord"
+                    if not pdb_path:
+                        raise ValueError(
+                            f"{target} TargetRecord 缺少 struct_path"
+                        )
+                    if not chain:
+                        raise ValueError(
+                            f"{target} TargetRecord 缺少 target_chain"
+                        )
+
+                    target_candidates = [
+                        c for c in scored
+                        if c.get("target") == target
+                    ]
+
+                    work_dir = (
+                        Path(cfg.results_dir)
+                        / "af2_validation"
+                        / target
                     )
 
-                pdb_path = rec.get("struct_path")
-                chain = rec.get("target_chain")
-
-                if not pdb_path:
-                    raise ValueError(
-                        f"{target} TargetRecord 缺少 struct_path"
+                    validated = validator.validate_selected_candidates(
+                        candidates=target_candidates,
+                        target_pdb=pdb_path,
+                        target_chain=chain,
+                        top_k=af2_top_k,
+                        work_dir=work_dir,
+                        num_models=af2_models,
+                        num_seeds=af2_seeds,
+                        num_recycles=af2_recycles,
+                        reuse_existing=True,
+                        dry_run=dry_run,
+                        save_output=False,
                     )
-                if not chain:
-                    raise ValueError(
-                        f"{target} TargetRecord 缺少 target_chain"
+
+                    all_validated.extend(validated)
+
+                if not dry_run:
+                    passed = validator.save_validated(all_validated)
+                    af2_results_for_ring5 = all_validated
+                    log().info(
+                        f"AF2验证完成：{len(all_validated)} 条完成验证，"
+                        f"{len(passed)} 条通过；全部结果交给Ring5多证据决策"
+                    )
+                else:
+                    af2_results_for_ring5 = all_validated
+                    n_passed = sum(
+                        1 for c in all_validated
+                        if c.get("af2_validation", {}).get("passed")
+                    )
+                    log().info(
+                        f"[dry-run] AF2候选: {len(all_validated)} 条，"
+                        f"通过: {n_passed} 条；全部结果交给Ring5预览"
                     )
 
-                target_candidates = [
-                    c for c in scored
-                    if c.get("target") == target
-                ]
-
-                work_dir = (
-                    Path(cfg.results_dir)
-                    / "af2_validation"
-                    / target
-                )
-
-                validated = validator.validate_selected_candidates(
-                    candidates=target_candidates,
-                    target_pdb=pdb_path,
-                    target_chain=chain,
-                    top_k=af2_top_k,
-                    work_dir=work_dir,
-                    num_models=af2_models,
-                    num_seeds=af2_seeds,
-                    num_recycles=af2_recycles,
-                    reuse_existing=True,
-                    dry_run=dry_run,
-                    save_output=False,
-                )
-
-                all_validated.extend(validated)
-
-            if not dry_run:
-                passed = validator.save_validated(all_validated)
-                af2_results_for_ring5 = all_validated
-                log().info(
-                    f"AF2验证完成：{len(all_validated)} 条完成验证，"
-                    f"{len(passed)} 条通过；全部结果交给Ring5多证据决策"
-                )
-            else:
-                af2_results_for_ring5 = all_validated
-                n_passed = sum(
-                    1 for c in all_validated
-                    if c.get("af2_validation", {}).get("passed")
-                )
-                log().info(
-                    f"[dry-run] AF2候选: {len(all_validated)} 条，"
-                    f"通过: {n_passed} 条；全部结果交给Ring5预览"
-                )
-
+        except Exception as e:
+            af2_results_for_ring5 = None
+            # 不覆盖环4 的 DONE 状态，单独记录 AF2 子环节
+            try:
+                state.data.setdefault("ring4_5", {})
+                state.data["ring4_5"]["status"] = "SKIPPED"
+                state.data["ring4_5"]["error"] = f"{type(e).__name__}: {e}"
+            except Exception:
+                pass
+            emit(4, "error", f"环 4.5 AF2 验证失败，已跳过: {e}")
+            log().warning(
+                "环 4.5 AF2 验证失败，已跳过验证并继续环5-10: "
+                f"{type(e).__name__}: {e}"
+            )
+            if not dry_run and strict_pipeline:
+                raise
     # ---- 环 5：输出 binder ----
-    if should_run(5):
+    if should_run(5) and not dep_failed(5, (4,)):
         emit(5, "running", "环 5：输出 Top binder")
         try:
             # 若本次显式启用了AF2，直接使用本次AF2阶段结果，
@@ -326,7 +379,7 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
             top_current = ring5.run(
                 cfg,
                 scored=scored_current if should_run(4) else None,
-                af2_results=af2_results_for_ring5 if af2_validate else None,
+                af2_results=af2_results_for_ring5,
                 top_n=top_n,
                 state=state,
             )
@@ -335,11 +388,11 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
             log().error(f"环 5 失败: {e}")
             state.mark_ring(5, "ERROR", str(e))
             emit(5, "error", f"环 5 失败: {e}")
-            if not dry_run:
+            if not dry_run and strict_pipeline:
                 raise
 
     # ---- 环 6：拼装载 ----
-    if should_run(6):
+    if should_run(6) and not dep_failed(6, (5,)):
         emit(6, "running", "环 6：拼装载（Pdp1_NTD-linker-binder）")
         try:
             top = (
@@ -357,7 +410,7 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
             log().error(f"环 6 失败: {e}")
             state.mark_ring(6, "ERROR", str(e))
             emit(6, "error", f"环 6 失败: {e}")
-            if not dry_run:
+            if not dry_run and strict_pipeline:
                 raise
 
     # ---- 环 7：尾纤维靶点分析 ----
@@ -368,17 +421,18 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
                 cfg,
                 state=state,
                 dry_run=dry_run,
+                allow_unreviewed=allow_unreviewed,
             )
             emit(7, "done", "完成：尾纤维靶点已打分排序")
         except Exception as e:
             log().error(f"环 7 失败: {e}")
             state.mark_ring(7, "ERROR", str(e))
             emit(7, "error", f"环 7 失败: {e}")
-            if not dry_run:
+            if not dry_run and strict_pipeline:
                 raise
 
     # ---- 环 8：尾纤维 binder/天然结构域筛选 ----
-    if should_run(8):
+    if should_run(8) and not dep_failed(8, (7,)):
         emit(8, "running", "环 8：尾纤维 binder/天然结构域筛选")
         try:
             fiber_targets = (
@@ -399,11 +453,11 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
             log().error(f"环 8 失败: {e}")
             state.mark_ring(8, "ERROR", str(e))
             emit(8, "error", f"环 8 失败: {e}")
-            if not dry_run:
+            if not dry_run and strict_pipeline:
                 raise
 
     # ---- 环 9：重编程 pvc13 ----
-    if should_run(9):
+    if should_run(9) and not dep_failed(9, (8,)):
         emit(9, "running", "环 9：重编程 pvc13（N-binder-C）")
         try:
             fiber_binders = (
@@ -421,22 +475,18 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
             log().error(f"环 9 失败: {e}")
             state.mark_ring(9, "ERROR", str(e))
             emit(9, "error", f"环 9 失败: {e}")
-            if not dry_run:
+            if not dry_run and strict_pipeline:
                 raise
 
     # ---- 环 10：纳米注射器总装（PVC 完整重设计） ----
     if should_run(10):
         emit(10, "running", "环 10：纳米注射器总装（PVC 完整重设计）")
         try:
-            payloads = (
-                payloads_current
-                if should_run(6)
-                else load_json(cfg.ring6_json)
+            payloads = artifact_of(
+                payloads_current, 6, lambda: load_json(cfg.ring6_json)
             )
-            fibers = (
-                fibers_current
-                if should_run(9)
-                else load_json(cfg.ring9_out)
+            fibers = artifact_of(
+                fibers_current, 9, lambda: load_json(cfg.ring9_out)
             )
             ring10.run(
                 cfg,
@@ -449,12 +499,114 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
             log().error(f"环 10 失败: {e}")
             state.mark_ring(10, "ERROR", str(e))
             emit(10, "error", f"环 10 失败: {e}")
-            if not dry_run:
+            if not dry_run and strict_pipeline:
                 raise
+
+    # -----------------------------------------------------------------
+    # 运行总结：每环状态 + 质量分层 + 交付物路径
+    # -----------------------------------------------------------------
+    rings_status = {}
+    for i in range(1, 11):
+        r = (state.data.get("rings", {}) or {}).get(str(i), {}) or {}
+        if not (start <= i <= stop) or i in skip:
+            # 本次没跑的环节：不要拿上一轮的 DONE 冒充本次结果
+            rings_status[str(i)] = {
+                "name": RING_NAMES.get(i, ""),
+                "status": "NOT_IN_RANGE",
+                "info": "",
+            }
+            continue
+        rings_status[str(i)] = {
+            "name": RING_NAMES.get(i, ""),
+            "status": r.get("status"),
+            "info": r.get("info"),
+        }
+
+    bad = [
+        i for i, v in rings_status.items()
+        if v["status"] in ("ERROR", "SKIPPED_UPSTREAM")
+    ]
+
+    # 有没有真正产出交付物（注射器规格）——没有产出就不算"部分完成"
+    try:
+        _syr = load_json(cfg.ring10_json, default=[]) or []
+    except Exception:
+        _syr = []
+    has_deliverable = bool(_syr)
+
+    if not bad:
+        overall = "COMPLETED"
+    elif has_deliverable:
+        overall = "PARTIAL"
+    else:
+        overall = "FAILED"
+
+    quality = {}
+    try:
+        # 只采信本次真正跑成功的环节，避免把上一轮的旧产物当成这次的质量结论
+        r7 = (
+            load_json(cfg.ring7_out, default=[]) or []
+            if rings_status["7"]["status"] in ("DONE", "SKIPPED")
+            else []
+        )
+        if r7:
+            quality["fiber_tier"] = r7[0].get("quality_tier")
+            quality["fiber_target"] = r7[0].get("fiber_target")
+        kinds = {}
+        for x in r7:
+            t = x.get("quality_tier") or "unknown"
+            kinds[t] = kinds.get(t, 0) + 1
+        if kinds:
+            quality["fiber_tier_counts"] = kinds
+
+        r10 = (
+            load_json(cfg.ring10_json, default=[]) or []
+            if rings_status["10"]["status"] in ("DONE", "SKIPPED")
+            else []
+        )
+        if r10:
+            quality["nanosyringes"] = len(r10)
+            quality["nanosyringes_complete"] = sum(
+                1 for x in r10 if x.get("complete")
+            )
+            quality["nanosyringes_complete_strict"] = sum(
+                1 for x in r10 if x.get("complete_strict")
+            )
+    except Exception as e:  # 汇总失败不影响主流程
+        log().warning(f"run_summary 质量字段收集失败: {e}")
+
+    summary = {
+        "organism": organism,
+        "run_id": run_record["run_id"],
+        "overall_status": overall,
+        "rings": rings_status,
+        "blocked_or_failed": bad,
+        "quality": quality,
+        "deliverables": {
+            "nanosyringes_json": cfg.ring10_json,
+            "nanosyringes_fasta": cfg.ring10_fasta,
+            "reprogrammed_fibers": cfg.ring9_out,
+            "targets": cfg.ring1_out,
+            "state": cfg.state_path,
+        },
+    }
+    summary_path = os.path.join(cfg.results_dir, "run_summary.json")
+    save_json(summary_path, summary)
+
+    log().info("-" * 50)
+    log().info(f"运行总结: {overall}")
+    for i in range(1, 11):
+        v = rings_status[str(i)]
+        if v["status"]:
+            log().info(f"  环{i:<2} {v['status']:<18} {v.get('info') or ''}")
+    if quality:
+        log().info(f"  质量分层: {quality}")
+    log().info(f"  总结文件: {summary_path}")
+    log().info("-" * 50)
 
     run_record = complete_run_record(
         run_record,
-        status="COMPLETED",
+        status=overall,
     )
     save_run_record(cfg, run_record)
 

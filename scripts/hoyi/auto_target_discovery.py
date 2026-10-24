@@ -10,6 +10,7 @@
 强信号关键词（完整词组）+ 排除黑名单（代谢/管家酶），避免把天冬氨酸转氨酶之类误判成靶点。
 """
 import os
+import re
 import sys
 import time
 import json
@@ -160,8 +161,10 @@ def search_proteins(organism, reviewed_only=True, size=500,
     try:
         with requests.Session() as session:
             while url is not None and pages < max_pages:
-                response = None
+                data = None
+                batch = None
                 last_exc = None
+                header_total = None
                 for attempt in range(4):
                     try:
                         response = session.get(
@@ -170,28 +173,30 @@ def search_proteins(organism, reviewed_only=True, size=500,
                             timeout=60,
                         )
                         response.raise_for_status()
+                        # 读 body 也可能中途断流（ChunkedEncodingError）。
+                        # 必须放在重试循环内，否则一次网络抖动就让整条管线崩掉。
+                        payload = response.json()
+                        if not isinstance(payload, dict):
+                            raise RuntimeError("UNIPROT_INVALID_RESPONSE")
+                        page = payload.get("results")
+                        if not isinstance(page, list):
+                            raise RuntimeError("UNIPROT_INVALID_RESULTS")
+                        header_total = response.headers.get("x-total-results")
+                        data = payload
+                        batch = page
                         break
-                    except requests.RequestException as exc:
+                    except (requests.RequestException, ValueError) as exc:
                         last_exc = exc
-                        response = None
+                        data = None
+                        batch = None
                         time.sleep(2 * (attempt + 1))
-                if response is None:
+                if data is None:
                     raise RuntimeError(
                         f"UNIPROT_REQUEST_FAILED: {last_exc}"
                     )
-                data = response.json()
 
-                if not isinstance(data, dict):
-                    raise RuntimeError("UNIPROT_INVALID_RESPONSE")
-
-                batch = data.get("results")
-                if not isinstance(batch, list):
-                    raise RuntimeError("UNIPROT_INVALID_RESULTS")
-
-                if total is None:
-                    header = response.headers.get("x-total-results")
-                    if header is not None:
-                        total = int(header)
+                if total is None and header_total is not None:
+                    total = int(header_total)
 
                 for record in batch:
                     if not isinstance(record, dict):
@@ -296,6 +301,20 @@ def _candidate_text(info):
     ]).lower()
 
 
+def _kw_hit(text, kw):
+    """关键词匹配：要求左侧为词边界（前面不能是字母/数字）。
+
+    历史 bug：原先用 `kw in text` 做子串匹配，于是排除词 "mutase"
+    会命中 "superoxide dis**mutase**"，把 SOD 这类正常蛋白整条误杀；
+    同理 "kinase" 会误伤 "streptokinase"、"protease" 误伤
+    "metalloprotease"。这里只收紧左侧边界，右侧保持宽松，
+    从而 "hemolysin" 仍能命中 "hemolysins"、"adhesin" 命中 "adhesins"。
+    """
+    if not kw or not text:
+        return False
+    return re.search(r"(?<![a-z0-9])" + re.escape(kw.lower()), text) is not None
+
+
 def _classify_verbose(info):
     """返回 (category, keyword, reason)。
 
@@ -308,16 +327,16 @@ def _classify_verbose(info):
 
     for keywords, category in FORCE_INCLUDE_RULES:
         for kw in keywords:
-            if kw.lower() in text:
+            if _kw_hit(text, kw):
                 return category, kw, None
 
     for kw in EXCLUDE_KEYWORDS:
-        if kw.lower() in text:
+        if _kw_hit(text, kw):
             return None, None, ("exclude", kw)
 
     for keywords, category in KEYWORD_RULES:
         for kw in keywords:
-            if kw.lower() in text:
+            if _kw_hit(text, kw):
                 return category, kw, None
 
     return None, None, ("no_keyword", None)
@@ -338,7 +357,7 @@ UNREVIEWED_MAX_RECORDS = 20000
 
 
 def auto_discover_targets(organism, max_targets=15, allow_unreviewed=False,
-                          diagnostics=None):
+                          diagnostics=None, force_unreviewed=False):
     """自动检索 + 筛选靶点，返回靶点 dict（target_id -> 靶点元信息）。
 
     allow_unreviewed=True 时，若 reviewed 为 0 条，回落到 TrEMBL 全部条目
@@ -365,11 +384,16 @@ def auto_discover_targets(organism, max_targets=15, allow_unreviewed=False,
         "provenance": "reviewed",
     })
 
-    log().info(f"  [自动检索] 检索 {organism} 的 reviewed 蛋白...")
-    results = search_proteins(organism, reviewed_only=True)
-    n_reviewed = len(results)
-    diag["reviewed_hits"] = n_reviewed
-    log().info(f"  [自动检索] 命中 {n_reviewed} 条 reviewed 蛋白")
+    if force_unreviewed:
+        results = []
+        n_reviewed = 0
+        log().info("  [自动检索] 强制使用 TrEMBL（跳过 reviewed 检索）")
+    else:
+        log().info(f"  [自动检索] 检索 {organism} 的 reviewed 蛋白...")
+        results = search_proteins(organism, reviewed_only=True)
+        n_reviewed = len(results)
+        diag["reviewed_hits"] = n_reviewed
+        log().info(f"  [自动检索] 命中 {n_reviewed} 条 reviewed 蛋白")
 
     provenance = "reviewed"
     if n_reviewed == 0 and allow_unreviewed:
@@ -482,6 +506,19 @@ def auto_discover_targets(organism, max_targets=15, allow_unreviewed=False,
     log().info(f"  [自动检索] 筛选出 {len(targets)} 个候选靶点")
     for tid, v in targets.items():
         log().info(f"    {tid}: {v['protein']} [{v['mechanism_class']}]")
+
+    # reviewed 有记录但全部被关键词/长度筛掉时，--allow-unreviewed 同样回落到 TrEMBL
+    if not targets and allow_unreviewed and provenance != "TrEMBL":
+        log().warning(
+            "  [自动检索] reviewed 记录筛完 0 候选，按 --allow-unreviewed 回落到 TrEMBL 重试"
+        )
+        return auto_discover_targets(
+            organism,
+            max_targets=max_targets,
+            allow_unreviewed=True,
+            diagnostics=diag,
+            force_unreviewed=True,
+        )
 
     # 抓序列
     for tid, v in targets.items():
