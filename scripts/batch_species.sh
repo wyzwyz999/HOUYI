@@ -9,7 +9,7 @@
 #   Adherent-invasive Escherichia coli => Escherichia coli
 set -uo pipefail
 
-cd /root/autodl-tmp/HOUYI_git
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 LIST="${1:-}"
 if [ -z "$LIST" ] || [ ! -f "$LIST" ]; then

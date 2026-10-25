@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /root/autodl-tmp/HOUYI_git
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source scripts/houyi_env.sh
 
 # 让脚本在非交互 shell（cron / 批量 / ssh 直接调用）下也能找到 python，

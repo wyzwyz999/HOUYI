@@ -5,7 +5,7 @@
 #   bash scripts/pack_result.sh "Mycobacterium simiae"
 #   bash scripts/pack_result.sh "Mycobacterium simiae" /root/autodl-tmp   # 指定输出目录
 set -uo pipefail
-cd /root/autodl-tmp/HOUYI_git
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source scripts/houyi_env.sh
 
 SP="${1:?用法: bash scripts/pack_result.sh \"菌名\" [输出目录]}"
