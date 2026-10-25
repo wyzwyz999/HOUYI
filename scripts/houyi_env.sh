@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-
 # ===============================
-# HOUYI stable runtime environment
+# HOUYI stable runtime environment（自定位版）
+# 代码根目录由本文件位置自动推导，主账号/子账号通用，不需要手改路径。
 # ===============================
 
+_HOUYI_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export HOUYI_RUN_MODE=native
-export HOUYI_BASE_WIN=/root/autodl-tmp/HOUYI_git
-export HOUYI_BASE_WSL=/root/autodl-tmp/HOUYI_git
+export HOUYI_BASE_WIN="$_HOUYI_ROOT"
+export HOUYI_BASE_WSL="$_HOUYI_ROOT"
 
 # ---------- RFdiffusion ----------
 export HOUYI_ENV_RF=rfdiffusion311
