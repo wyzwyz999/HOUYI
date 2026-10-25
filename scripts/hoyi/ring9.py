@@ -120,6 +120,8 @@ def run(cfg, fiber_binders=None, state=None):
             # 质量分层透传
             "quality_tier": fb.get("quality_tier"),
             "provenance": fb.get("provenance"),
+            "domain_evidence": fb.get("domain_evidence", []),
+            "receptor_domain_evidence": fb.get("receptor_domain_evidence", []),
             "note": (
                 "已按 pvc13_N-linker-binder-linker-pvc13_C "
                 "三段式重编程"

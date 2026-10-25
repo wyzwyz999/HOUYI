@@ -118,6 +118,8 @@ def run(cfg, fiber_targets=None, state=None, num_designs=32, mpnn_samples=3, dry
             # 质量分层透传（curated / reviewed / reviewed_weak / exploratory / fallback）
             "quality_tier": ft.get("quality_tier"),
             "provenance": ft.get("provenance"),
+            "domain_evidence": ft.get("domain_evidence", []),
+            "receptor_domain_evidence": ft.get("receptor_domain_evidence", []),
         }
 
         route_results = []

@@ -18,6 +18,10 @@ from .auto_target_discovery import (
     _get_sequence,
     _curl_json,
 )
+from .interpro_receptor_rules import (
+    classify as classify_receptor_domains,
+    is_disabled as interpro_disabled,
+)
 
 
 # ---------------------------------------------------------------------
@@ -34,10 +38,10 @@ from .auto_target_discovery import (
 
 TIER_RANK = {
     "curated": 0,
-    "reviewed": 1,
-    "reviewed_weak": 2,
-    "exploratory": 3,
-    "fallback": 4,
+    "reviewed": 1,        # reviewed + 自身命中受体家族
+    "exploratory": 2,     # TrEMBL + 自身命中受体家族
+    "reviewed_weak": 3,   # reviewed 但只有定位注释，无家族证据
+    "fallback": 4,        # TrEMBL 仅定位注释 / 管家酶兼职蛋白
 }
 
 # 管家酶 / 兼职(moonlighting)蛋白：TrEMBL 里常被标成 cell surface，
@@ -417,6 +421,7 @@ def auto_discover_fiber_targets(organism, max_targets=8, allow_unreviewed=False,
                 exposure,
                 specificity,
                 weak_only,
+                match is not None,
             )
         )
 
@@ -425,7 +430,7 @@ def auto_discover_fiber_targets(organism, max_targets=8, allow_unreviewed=False,
 
     candidates = {}
 
-    for _, info, keyword, exposure, specificity, weak_only in raw_candidates:
+    for _, info, keyword, exposure, specificity, weak_only, family in raw_candidates:
         gene = info["genes"][0] if info["genes"] else ""
         accession = info["accession"]
 
@@ -441,10 +446,41 @@ def auto_discover_fiber_targets(organism, max_targets=8, allow_unreviewed=False,
             time.sleep(0.25)
 
         moon = _is_moonlighting(info["name"], gene)
-        if provenance == "TrEMBL":
-            tier = "fallback" if (weak_only or moon) else "exploratory"
+
+        # 名称/功能没命中受体家族时，用 InterPro 结构域补齐证据
+        # （hypothetical protein 但结构域是 Autotransporter/Adhesin 的情况）
+        receptor_domains = []
+        if not moon and not family and accession and not interpro_disabled():
+            dom = classify_receptor_domains(accession)
+            if dom.get("family_match"):
+                family = True
+                receptor_domains = dom.get("family_labels", [])
+                log().info(
+                    f"    [Ring7 domain] {accession}: "
+                    f"结构域命中 {receptor_domains}"
+                )
+            time.sleep(0.2)
+
+        # 严格模式：直接丢弃管家酶/兼职蛋白（会降低产量，默认关闭）
+        if moon and os.environ.get("HOUYI_NO_MOONLIGHTING", "0") == "1":
+            log().info(
+                f"    [Ring7 gate] DROP {accession}: {info['name']} "
+                "| reason=moonlighting(strict)"
+            )
+            continue
+
+        # 质量分层原则（2026-10-25）：
+        #   1) 真实受体家族优先：候选在自身名字/功能里命中受体家族规则
+        #      （outer membrane / adhesin / pilin / hemagglutinin / porin ...），
+        #      即使来自 TrEMBL，也排在"仅靠定位注释"的酶之前。
+        #   2) 只有定位证据的候选降档（reviewed_weak / fallback）。
+        #   3) 管家酶永远最后一档，但只要还有候选就保留，保证端到端跑完。
+        if moon:
+            tier = "fallback"
+        elif family:
+            tier = "reviewed" if provenance == "reviewed" else "exploratory"
         else:
-            tier = "reviewed_weak" if (weak_only or moon) else "reviewed"
+            tier = "reviewed_weak" if provenance == "reviewed" else "fallback"
 
         candidates[target_id] = {
             "protein": info["name"],
@@ -479,6 +515,8 @@ def auto_discover_fiber_targets(organism, max_targets=8, allow_unreviewed=False,
             "provenance": provenance,
             "quality_tier": tier,
             "moonlighting": moon,
+            "family_match": family,
+            "receptor_domain_evidence": receptor_domains,
             "evidence_source": (
                 f"UniProt {provenance} annotation + subcellular localization"
             ),
@@ -498,7 +536,9 @@ def auto_discover_fiber_targets(organism, max_targets=8, allow_unreviewed=False,
     for tid, info in candidates.items():
         log().info(
             f"    {tid}: {info['protein']} "
-            f"[{info['evidence_keyword']}]"
+            f"[{info['evidence_keyword']}] "
+            f"tier={info['quality_tier']}"
+            + (" moonlighting" if info.get("moonlighting") else "")
         )
 
     # reviewed 无表面受体候选时，--allow-unreviewed 回落到 TrEMBL 重试
@@ -676,15 +716,20 @@ def run(cfg, fiber_targets=None, state=None, dry_run=False,
                 "quality_tier",
                 "reviewed" if info.get("auto_detected", False) else "curated",
             ),
+            "moonlighting": info.get("moonlighting", False),
+            "family_match": info.get("family_match", False),
+            "receptor_domain_evidence": info.get("receptor_domain_evidence", []),
             "provenance": info.get("provenance"),
         }
 
         results.append(rec)
 
-    # 先按质量档，再按综合分：高质量候选永远排在降级候选之前
+    # 排序：质量档 → 是否靠自身名字/功能命中受体家族 → 综合分
+    # 这样"真实受体家族"永远排在"仅靠定位注释的酶"前面。
     results.sort(
         key=lambda x: (
             TIER_RANK.get(x.get("quality_tier", "fallback"), 9),
+            0 if x.get("family_match") else 1,
             -x["composite_score"],
         )
     )
