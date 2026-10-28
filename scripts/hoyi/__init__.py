@@ -104,11 +104,25 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
 
     def artifact_of(current, ring, loader):
         """取本次产物；若该环本次失败/被阻塞，返回空，禁止拿上一轮旧文件冒充。"""
-        if ring_status(ring) in ("ERROR", "SKIPPED_UPSTREAM"):
+        if ring_status(ring) in ("ERROR", "SKIPPED_UPSTREAM", "SKIPPED_NO_PAYLOAD"):
             return []
         if current is not None:
             return current
         return loader() or []
+
+    def payload_ready():
+        """环6 是否真正产出了载荷。
+
+        没有载荷时，尾纤维（环8/9）和总装（环10）没有任何意义：
+        注射器 = 载荷 + 靶向模块，缺一个都组装不出来。所以这里直接掐断，
+        避免像以前那样白跑 30-60 分钟的 Chai-1 + RFdiffusion。
+        需要单独研究尾纤维时，可设 HOUYI_ALLOW_FIBER_WITHOUT_PAYLOAD=1 强制继续。
+        """
+        if os.environ.get("HOUYI_ALLOW_FIBER_WITHOUT_PAYLOAD", "0") == "1":
+            return True
+        return bool(
+            artifact_of(payloads_current, 6, lambda: load_json(cfg.ring6_json))
+        )
 
     # 本次run_pipeline内的显式内存产物。
     # 同次运行优先使用这些对象，只有断点续跑时才回退读取JSON。
@@ -432,7 +446,14 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
                 raise
 
     # ---- 环 8：尾纤维 binder/天然结构域筛选 ----
-    if should_run(8) and not dep_failed(8, (7,)):
+    if should_run(8) and not payload_ready():
+        state.mark_ring(8, "SKIPPED_NO_PAYLOAD", "环6 无载荷，跳过尾纤维 binder 设计")
+        emit(8, "skipped", "跳过：环6 无载荷")
+        log().warning(
+            "  环8 跳过：环6 无载荷（上游靶点被排除），不再设计尾纤维"
+            "（如确需单独研究尾纤维，设 HOUYI_ALLOW_FIBER_WITHOUT_PAYLOAD=1）"
+        )
+    elif should_run(8) and not dep_failed(8, (7,)):
         emit(8, "running", "环 8：尾纤维 binder/天然结构域筛选")
         try:
             fiber_targets = (
@@ -457,7 +478,11 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
                 raise
 
     # ---- 环 9：重编程 pvc13 ----
-    if should_run(9) and not dep_failed(9, (8,)):
+    if should_run(9) and not payload_ready():
+        state.mark_ring(9, "SKIPPED_NO_PAYLOAD", "环6 无载荷，跳过 pvc13 重编程")
+        emit(9, "skipped", "跳过：环6 无载荷")
+        log().warning("  环9 跳过：环6 无载荷，不做 pvc13 重编程")
+    elif should_run(9) and not dep_failed(9, (8,)):
         emit(9, "running", "环 9：重编程 pvc13（N-binder-C）")
         try:
             fiber_binders = (
@@ -479,7 +504,21 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
                 raise
 
     # ---- 环 10：纳米注射器总装（PVC 完整重设计） ----
-    if should_run(10):
+    def fibers_available():
+        return bool(
+            artifact_of(fibers_current, 9, lambda: load_json(cfg.ring9_out))
+        )
+
+    if should_run(10) and not payload_ready() and not fibers_available():
+        state.mark_ring(
+            10, "SKIPPED_NO_PAYLOAD",
+            "既无载荷也无尾纤维，跳过总装（避免用空结果覆盖历史产物）",
+        )
+        emit(10, "skipped", "跳过：无载荷/无尾纤维")
+        log().warning(
+            "  环10 跳过：既无载荷也无尾纤维，不写出空的 nanosyringes.json"
+        )
+    elif should_run(10):
         emit(10, "running", "环 10：纳米注射器总装（PVC 完整重设计）")
         try:
             payloads = artifact_of(
@@ -524,7 +563,7 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
 
     bad = [
         i for i, v in rings_status.items()
-        if v["status"] in ("ERROR", "SKIPPED_UPSTREAM")
+        if v["status"] in ("ERROR", "SKIPPED_UPSTREAM", "SKIPPED_NO_PAYLOAD")
     ]
 
     # 有没有真正产出交付物（注射器规格）——没有产出就不算"部分完成"
