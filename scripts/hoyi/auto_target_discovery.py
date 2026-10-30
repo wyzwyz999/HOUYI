@@ -165,7 +165,7 @@ def search_proteins(organism, reviewed_only=True, size=500,
                 batch = None
                 last_exc = None
                 header_total = None
-                for attempt in range(4):
+                for attempt in range(6):
                     try:
                         response = session.get(
                             url,
@@ -189,7 +189,8 @@ def search_proteins(organism, reviewed_only=True, size=500,
                         last_exc = exc
                         data = None
                         batch = None
-                        time.sleep(2 * (attempt + 1))
+                        # 指数退避（2/4/8/16/30s）：EBI 偶发 503 / 连接超时
+                        time.sleep(min(2 ** (attempt + 1), 30))
                 if data is None:
                     raise RuntimeError(
                         f"UNIPROT_REQUEST_FAILED: {last_exc}"

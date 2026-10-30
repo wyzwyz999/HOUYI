@@ -18,6 +18,26 @@ ORGANISM="$1"
 shift
 
 # ---------------------------------------------------------------------------
+# UniProt 可用性预检（2026-10-30）
+# 环1 和环7 都依赖 rest.uniprot.org；EBI 偶尔返回 503 或直接超时。
+# 与其白跑（环1 失败 → 整条 FAILED），不如开跑前 15 秒确认一下。
+# 需要跳过检查：HOUYI_SKIP_NETCHECK=1
+# ---------------------------------------------------------------------------
+if [ "${HOUYI_SKIP_NETCHECK:-0}" != "1" ]; then
+    _code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' \
+        'https://rest.uniprot.org/uniprotkb/search?query=reviewed:true&size=1' 2>/dev/null || echo 000)
+    if [ "$_code" != "200" ]; then
+        echo "=========================================="
+        echo "ERROR: UniProt 当前不可用（HTTP ${_code:-000}）"
+        echo "  环1/环7 都依赖 rest.uniprot.org，现在开跑必然失败。"
+        echo "  处理：等 5-30 分钟重试，或换一台实例；"
+        echo "        确认要跳过检查：HOUYI_SKIP_NETCHECK=1 bash scripts/run_species.sh ..."
+        echo "=========================================="
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 质量策略（2026-10-24）：reviewed 优先，失败才降级
 #
 # --allow-unreviewed 的语义是"先查 reviewed（Swiss-Prot 人工审阅），只有查不到
