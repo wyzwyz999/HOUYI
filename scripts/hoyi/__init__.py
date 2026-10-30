@@ -649,10 +649,19 @@ def run_pipeline(cfg: Config, organism: str, targets=None,
     )
     save_run_record(cfg, run_record)
 
-    emit(-1, "finish", "管线执行完成")
+    emit(-1, "finish", f"管线执行结束: {overall}")
     log().info("=" * 50)
-    log().info("管线执行完成")
+    if overall == "COMPLETED":
+        log().info("管线执行完成（成功）")
+    elif overall == "PARTIAL":
+        log().info("管线执行完成，但存在失败/跳过的环节 → PARTIAL")
+        log().info("  有产物但证据不全，详见上方“运行总结”与 run_summary.json")
+    else:
+        log().info("管线执行结束，但结果失败 → FAILED")
+        log().info("  没有产出可用结果；失败原因见上方各环状态（环1/环7 出错会连带下游跳过）")
     log().info(f"Run ID: {run_record['run_id']}")
     log().info(f"状态文件: {cfg.state_path}")
     log().info("=" * 50)
+    # 供 CLI 决定退出码：COMPLETED / PARTIAL / FAILED
+    state.data["overall_status"] = overall
     return state.data

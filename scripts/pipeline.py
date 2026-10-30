@@ -115,7 +115,7 @@ def main():
         sys.exit(1)
 
     try:
-        run_pipeline(
+        result = run_pipeline(
             cfg,
             organism,
             targets=args.targets,
@@ -146,6 +146,14 @@ def main():
 
         print(f"\n[FATAL] 管线执行失败: {e}")
         sys.exit(1)
+
+    status = (result or {}).get("overall_status", "COMPLETED")
+    if status == "FAILED":
+        print("\n[FAILED] 管线没有产出可用结果（见上方“运行总结”与 run_summary.json）")
+        sys.exit(1)
+    if status == "PARTIAL":
+        print("\n[PARTIAL] 管线跑完，但存在失败/跳过的环节（见 run_summary.json）")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
