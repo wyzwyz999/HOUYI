@@ -24,12 +24,17 @@ shift
 # 需要跳过检查：HOUYI_SKIP_NETCHECK=1
 # ---------------------------------------------------------------------------
 if [ "${HOUYI_SKIP_NETCHECK:-0}" != "1" ]; then
-    _code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' \
-        'https://rest.uniprot.org/uniprotkb/search?query=reviewed:true&size=1' 2>/dev/null || echo 000)
+    # 必须用“真实查询形态”：EBI 出故障时，通用查询可能 200，
+    # 但 organism_name 检索会 500（2026-10-30 实际发生过）。
+    _code=$(curl -sS -m 20 -G -o /dev/null -w '%{http_code}' \
+        --data-urlencode "query=organism_name:\"$ORGANISM\" AND reviewed:true" \
+        --data 'size=1&format=list' \
+        'https://rest.uniprot.org/uniprotkb/search' 2>/dev/null || echo 000)
     if [ "$_code" != "200" ]; then
         echo "=========================================="
-        echo "ERROR: UniProt 当前不可用（HTTP ${_code:-000}）"
-        echo "  环1/环7 都依赖 rest.uniprot.org，现在开跑必然失败。"
+        echo "ERROR: UniProt 按物种检索不可用（HTTP ${_code:-000}）"
+        echo "  测试查询: organism_name=\"$ORGANISM\" AND reviewed:true"
+        echo "  环1/环7 都用这条路径，现在开跑必然失败。"
         echo "  处理：等 5-30 分钟重试，或换一台实例；"
         echo "        确认要跳过检查：HOUYI_SKIP_NETCHECK=1 bash scripts/run_species.sh ..."
         echo "=========================================="
