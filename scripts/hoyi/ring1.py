@@ -67,6 +67,18 @@ def _explain_no_targets(organism, diag, allow_unreviewed):
             "--data 'size=1&format=list' -D - -o /dev/null | grep -i x-total-results"
         )
 
+    elif stage == "no_sequence":
+        failed = diag.get("sequence_failed") or []
+        lines.append(
+            f'环1 无可用靶点：organism_name="{organism}" 已筛选出候选，但'
+            f"序列抓取失败（{len(failed)} 个），全部丢弃。"
+        )
+        lines.append("这是 UniProt 暂时不可用或网络抖动的典型表现，不是菌名或代码问题。")
+        for x in failed[:5]:
+            lines.append(f"      {x}")
+        lines.append("处理：等几分钟重跑（现在会自动重试 3 次）；")
+        lines.append("      若持续失败，用 --targets <UniProt ID> 手动指定，或换一台实例。")
+
     elif not classified:
         lines.append(
             f'环1 无可用靶点：organism_name="{organism}" 命中 '

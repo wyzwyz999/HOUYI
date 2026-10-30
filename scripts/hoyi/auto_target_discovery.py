@@ -521,10 +521,39 @@ def auto_discover_targets(organism, max_targets=15, allow_unreviewed=False,
             force_unreviewed=True,
         )
 
-    # 抓序列
-    for tid, v in targets.items():
-        if v["uniprot"]:
-            v["sequence"] = _get_sequence(v["uniprot"])
-            time.sleep(0.4)
+    # 抓序列（2026-10-30）：必须校验非空。
+    # 曾经出现过 UniProt 瞬时故障导致 sequence="" 但靶点仍被保留，
+    # 结果环2 报 no_sequence、环3 无 binder、整条流程“跑完但什么也没有”。
+    seq_failed = []
+    for tid in list(targets.keys()):
+        v = targets[tid]
+        if not v.get("uniprot"):
+            continue
+        seq = ""
+        for attempt in range(3):
+            try:
+                seq = _get_sequence(v["uniprot"])
+            except Exception:
+                seq = ""
+            if seq:
+                break
+            time.sleep(1.5 * (attempt + 1))
+        if not seq:
+            seq_failed.append(f"{tid}|{v.get('uniprot')}|{(v.get('protein') or '')[:40]}")
+            log().warning(
+                f"  [自动检索] 丢弃 {tid}：序列抓取失败（{v.get('uniprot')}）"
+            )
+            del targets[tid]
+            continue
+        v["sequence"] = seq
+        time.sleep(0.4)
+
+    if seq_failed:
+        diag["sequence_failed"] = seq_failed
+    if not targets:
+        diag["stage"] = "no_sequence"
+        log().warning(
+            f"  [自动检索] 候选 {len(seq_failed)} 个全部因序列抓取失败被丢弃"
+        )
 
     return targets
